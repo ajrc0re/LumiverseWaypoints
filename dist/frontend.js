@@ -417,6 +417,9 @@ function setup(ctx) {
   let notice = "";
   let noticeError = false;
   let sequence = 0;
+  let selection = ctx.getActiveChat();
+  let selectionVersion = 0;
+  let refreshFlight;
   let hud;
   let extrasActions = [];
   let pickerModal;
@@ -442,7 +445,13 @@ function setup(ctx) {
         reject(new Error("Waypoints did not respond in time."));
       }, 30000);
       pending.set(requestId, { resolve: (value) => resolve(value), reject, timer });
-      ctx.sendToBackend({ type: "waypoints:request", requestId, action, input });
+      try {
+        ctx.sendToBackend({ type: "waypoints:request", requestId, action, input });
+      } catch (error) {
+        pending.delete(requestId);
+        clearTimeout(timer);
+        reject(error);
+      }
     });
   }
   function setNotice(message, error = false) {
@@ -450,7 +459,56 @@ function setup(ctx) {
     noticeError = error;
   }
   function currentChatId() {
-    return view?.chatId ?? ctx.getActiveChat().chatId ?? undefined;
+    return ctx.getActiveChat().chatId ?? undefined;
+  }
+  function requireCurrentChatId() {
+    const chatId = currentChatId();
+    if (!chatId || view?.chatId !== chatId)
+      throw new Error("Wait for the active chat to load first.");
+    return chatId;
+  }
+  function syncSelection() {
+    if (destroyed)
+      return false;
+    const next = ctx.getActiveChat();
+    if (next.chatId === selection.chatId && next.characterId === selection.characterId)
+      return false;
+    selection = next;
+    selectionVersion += 1;
+    refreshFlight = undefined;
+    view = null;
+    busy = false;
+    setNotice("");
+    refreshPromptCount("");
+    pickerModal?.dismiss();
+    for (const request of pending.values()) {
+      clearTimeout(request.timer);
+      request.reject(new Error("The active chat changed."));
+    }
+    pending.clear();
+    render();
+    syncActionControls();
+    syncHud();
+    return true;
+  }
+  function isCurrentSelection(version) {
+    if (destroyed)
+      return false;
+    if (syncSelection())
+      refresh();
+    return version === selectionVersion;
+  }
+  function refresh() {
+    if (destroyed)
+      return;
+    const loading = load();
+    const version = selectionVersion;
+    loading.catch((error) => {
+      if (!isCurrentSelection(version))
+        return;
+      setNotice(error instanceof Error ? error.message : String(error), true);
+      render();
+    });
   }
   function refreshPromptCount(content) {
     if (!content) {
@@ -498,34 +556,67 @@ function setup(ctx) {
     componentHandles.push(mount(target));
   }
   async function load() {
-    const loaded = asView(await rpc("refresh", { chatId: currentChatId() }));
-    if (!loaded)
-      throw new Error("Waypoints returned an invalid status.");
-    view = loaded;
-    if (!draftInitialized) {
-      draft = cloneSettingsDraft(loaded.settings);
-      draftInitialized = true;
+    if (destroyed)
+      return;
+    syncSelection();
+    if (refreshFlight) {
+      refreshFlight.queued = true;
+      return refreshFlight.promise;
     }
-    refreshPromptCount(loaded.prompt.content);
-    render();
-    syncActionControls();
-    syncHud();
+    const flight = { version: selectionVersion, queued: false, promise: Promise.resolve() };
+    refreshFlight = flight;
+    flight.promise = (async () => {
+      do {
+        flight.queued = false;
+        const chatId = selection.chatId;
+        const loaded = asView(await rpc("refresh", { chatId }));
+        if (!isCurrentSelection(flight.version))
+          throw new Error("The active chat changed.");
+        if (!loaded || loaded.chatId !== null && loaded.chatId !== chatId) {
+          throw new Error("Waypoints returned an invalid status.");
+        }
+        view = loaded;
+        if (!draftInitialized) {
+          draft = cloneSettingsDraft(loaded.settings);
+          draftInitialized = true;
+        }
+        refreshPromptCount(loaded.prompt.content);
+        render();
+        syncActionControls();
+        syncHud();
+      } while (flight.queued);
+    })().finally(() => {
+      if (refreshFlight === flight)
+        refreshFlight = undefined;
+    });
+    return flight.promise;
   }
   async function safely(action) {
+    if (destroyed)
+      return;
+    if (syncSelection()) {
+      refresh();
+      return;
+    }
     if (busy)
       return;
+    const version = selectionVersion;
     busy = true;
-    syncActionControls();
-    render();
     try {
-      await action();
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error), true);
-    } finally {
-      busy = false;
-      render();
       syncActionControls();
       syncHud();
+      render();
+      await action();
+    } catch (error) {
+      if (isCurrentSelection(version))
+        setNotice(error instanceof Error ? error.message : String(error), true);
+    } finally {
+      if (isCurrentSelection(version)) {
+        busy = false;
+        render();
+        syncActionControls();
+        syncHud();
+      }
     }
   }
   function selectedControlCharacter() {
@@ -538,9 +629,7 @@ function setup(ctx) {
     const character = selectedControlCharacter();
     if (!character)
       throw new Error("Choose an active or upcoming greeting first.");
-    const chatId = currentChatId();
-    if (!chatId)
-      throw new Error("Open a chat first.");
+    const chatId = requireCurrentChatId();
     await rpc("set-enabled", {
       chatId,
       characterId: character.id,
@@ -549,29 +638,35 @@ function setup(ctx) {
     await load();
   }
   async function forceTransition() {
-    const result = await rpc("force", { chatId: currentChatId() });
+    const result = await rpc("force", { chatId: requireCurrentChatId() });
     const transition = isRecord2(result) ? safeTransitionText(result.transition) : "";
     if (transition)
       setNotice(transition);
     await load();
   }
   async function undoTransition() {
-    const result = await rpc("undo", { chatId: currentChatId() });
+    const result = await rpc("undo", { chatId: requireCurrentChatId() });
     const transition = isRecord2(result) ? safeTransitionText(result.transition) : "";
     if (transition)
       setNotice(transition);
     await load();
   }
   function openPickerSafely(kind) {
+    const version = selectionVersion;
     openGreetingPicker(kind).catch((error) => {
+      if (!isCurrentSelection(version))
+        return;
       setNotice(error instanceof Error ? error.message : String(error), true);
       render();
       syncActionControls();
     });
   }
   async function openGreetingPicker(kind) {
+    if (!isCurrentSelection(selectionVersion))
+      return;
     if (pickerOpen || busy || !view)
       return;
+    const version = selectionVersion;
     const currentView = view;
     const options = greetingPickerOptions(kind, currentView);
     if (!options.length) {
@@ -669,7 +764,7 @@ function setup(ctx) {
       };
       const commit = async () => {
         const chosen = selected;
-        if (!chosen || committing || busy)
+        if (settled || !isCurrentSelection(version) || !chosen || committing || busy)
           return;
         committing = true;
         busy = true;
@@ -689,12 +784,16 @@ function setup(ctx) {
           render();
           finish();
         } catch (errorValue) {
-          showError(errorValue instanceof Error ? errorValue.message : String(errorValue));
+          if (isCurrentSelection(version))
+            showError(errorValue instanceof Error ? errorValue.message : String(errorValue));
         } finally {
-          busy = false;
           committing = false;
-          syncActionControls();
-          syncHud();
+          if (isCurrentSelection(version)) {
+            busy = false;
+            render();
+            syncActionControls();
+            syncHud();
+          }
         }
       };
       unsubscribeDismiss = modal.onDismiss(() => finish(false));
@@ -705,8 +804,11 @@ function setup(ctx) {
     });
   }
   async function openActionBarMenu() {
+    if (!isCurrentSelection(selectionVersion))
+      return;
     if (!actionBarButton || busy || !view)
       return;
+    const version = selectionVersion;
     const character = selectedControlCharacter();
     const rect = actionBarButton.getBoundingClientRect();
     let result;
@@ -729,10 +831,14 @@ function setup(ctx) {
         ]
       });
     } catch (error) {
+      if (!isCurrentSelection(version))
+        return;
       setNotice(error instanceof Error ? error.message : String(error), true);
       render();
       return;
     }
+    if (!isCurrentSelection(version))
+      return;
     if (result.selectedKey === "toggle")
       safely(toggleSelectedCharacter);
     else if (result.selectedKey === "choose-current")
@@ -758,7 +864,7 @@ function setup(ctx) {
       actionBarButton.title = character ? "Waypoints controls — " + (character.enabled ? "ON" : "OFF") : "Waypoints controls";
       actionBarButton.setAttribute("aria-label", actionBarButton.title);
     }
-    const extrasVisible = settings?.extrasActions === true;
+    const extrasVisible = settings?.extrasActions === true && !busy && Boolean(view?.chatId);
     for (const action of extrasActions)
       action.setEnabled(extrasVisible);
     if (extrasActions.length < 5)
@@ -835,8 +941,10 @@ function setup(ctx) {
     const node = element("button", "wp-button" + (className ? " " + className : ""), label);
     node.type = "button";
     node.disabled = disabled || busy;
+    const version = selectionVersion;
     node.onclick = () => {
-      action();
+      if (isCurrentSelection(version))
+        action();
     };
     return node;
   }
@@ -869,6 +977,7 @@ function setup(ctx) {
     const currentView = view;
     if (!currentView)
       return;
+    const version = selectionVersion;
     addField(parent, label, currentView.isGroupChat ? "All group members' greetings are available here." : "", (target) => ctx.components.mountSelect(target, {
       value: selectionValue(selectedGreeting),
       clearable: allowClear,
@@ -880,14 +989,16 @@ function setup(ctx) {
         group: greeting.characterName
       })),
       onChange: (value) => {
-        const selection = parseSelection(value);
-        if (!selection && !allowClear)
+        if (!isCurrentSelection(version))
+          return;
+        const selection2 = parseSelection(value);
+        if (!selection2 && !allowClear)
           return;
         safely(async () => {
           const chatId = currentChatId();
           if (!chatId)
             throw new Error("Open a chat first.");
-          await changed(selection);
+          await changed(selection2);
           await load();
         });
       }
@@ -907,18 +1018,18 @@ function setup(ctx) {
     headingText.append(element("div", "wp-kicker", view.isGroupChat ? "Group chat" : "Character chat"));
     headingText.append(element("h3", "", "Status"));
     heading.append(headingText);
-    heading.append(button("Refresh", () => safely(load)));
+    heading.append(button("Refresh", refresh));
     status.append(heading, element("p", "wp-muted", view.status));
     parent.append(status);
     const selections = element("section", "wp-section");
     selections.append(element("h3", "", "Greeting path"));
     const grid = element("div", "wp-grid");
     selections.append(grid);
-    renderPicker(grid, "Active greeting", view.active, false, async (selection) => {
-      await rpc("set-active", { chatId: currentChatId(), selection });
+    renderPicker(grid, "Active greeting", view.active, false, async (selection2) => {
+      await rpc("set-active", { chatId: currentChatId(), selection: selection2 });
     });
-    renderPicker(grid, "Upcoming greeting", view.upcoming, true, async (selection) => {
-      await rpc("set-upcoming", { chatId: currentChatId(), selection });
+    renderPicker(grid, "Upcoming greeting", view.upcoming, true, async (selection2) => {
+      await rpc("set-upcoming", { chatId: currentChatId(), selection: selection2 });
     });
     const previews = element("div", "wp-grid");
     const activePreview = element("div", "wp-field");
@@ -937,6 +1048,7 @@ function setup(ctx) {
     enabled.append(element("h3", "", view.isGroupChat ? "Group member switches" : "Character switch"));
     enabled.append(element("p", "wp-help", view.isGroupChat ? "Each group member has a per-chat override. New members default to ON." : "This character's Waypoints switch is stored on the character card."));
     for (const character of view.characters) {
+      const version = selectionVersion;
       const row = element("div", "wp-character");
       const names = element("div");
       names.append(element("div", "wp-character-name", character.name || "Unnamed character"));
@@ -948,6 +1060,8 @@ function setup(ctx) {
         checked: character.enabled,
         ariaLabel: "Enable Waypoints for " + character.name,
         onChange: (checked) => {
+          if (!isCurrentSelection(version))
+            return;
           safely(async () => {
             await rpc("set-enabled", {
               chatId: currentChatId(),
@@ -983,9 +1097,8 @@ function setup(ctx) {
       await navigator.clipboard.writeText(text);
       setNotice("Diagnostics copied.");
     })), button("Clear diagnostics", () => safely(async () => {
-      const result = asView(await rpc("clear-diagnostics", { chatId: currentChatId() }));
-      if (result)
-        view = result;
+      await rpc("clear-diagnostics", { chatId: currentChatId() });
+      await load();
       setNotice("Diagnostics cleared.");
     })));
     diagnostics.append(diagActions);
@@ -1259,6 +1372,8 @@ function setup(ctx) {
     root2.append(button("Force", () => safely(forceTransition), "primary", !view.upcoming));
   }
   function render() {
+    if (destroyed)
+      return;
     clearComponents();
     root.replaceChildren();
     const header = element("header", "wp-header");
@@ -1266,7 +1381,7 @@ function setup(ctx) {
     intro.append(element("h2", "", "Waypoints"));
     intro.append(element("p", "wp-muted", "Guide a chat through the next greeting without exposing its contents."));
     header.append(intro);
-    header.append(button("Refresh", () => safely(load)));
+    header.append(button("Refresh", refresh));
     root.append(header);
     renderNotice(root);
     renderTabs(root);
@@ -1279,6 +1394,8 @@ function setup(ctx) {
       renderSettings(pageRoot);
   }
   disposers.push(ctx.onBackendMessage((payload) => {
+    if (syncSelection())
+      refresh();
     const message = safeRecord(payload);
     if (message.type === "waypoints:reply" && typeof message.requestId === "string") {
       const request = pending.get(message.requestId);
@@ -1293,24 +1410,31 @@ function setup(ctx) {
       return;
     }
     if (message.type === "waypoints:permission-denied" || typeof message.type === "string" && shouldRefreshDrawer(message.type)) {
-      safely(load);
+      refresh();
     }
   }));
-  disposers.push(tab.onActivate(() => {
-    safely(load);
-  }));
-  disposers.push(ctx.events.on("CHAT_SWITCHED", () => {
-    if (shouldRefreshDrawer("CHAT_SWITCHED"))
-      safely(load);
-  }));
-  disposers.push(ctx.events.on("CHAT_CHANGED", () => {
-    if (shouldRefreshDrawer("CHAT_CHANGED"))
-      safely(load);
-  }));
+  disposers.push(tab.onActivate(refresh));
+  disposers.push(ctx.events.on("CHAT_SWITCHED", refresh));
+  disposers.push(ctx.events.on("CHAT_CHANGED", refresh));
+  const selectionChanged = () => {
+    if (syncSelection())
+      refresh();
+  };
+  let subscribed = false;
+  try {
+    if (ctx.state) {
+      disposers.push(ctx.state.subscribe("chat.active", selectionChanged));
+      subscribed = true;
+    }
+  } catch {}
+  if (!subscribed) {
+    const selectionTimer = setInterval(selectionChanged, 500);
+    disposers.push(() => clearInterval(selectionTimer));
+  }
   render();
   syncActionControls();
   ctx.ready();
-  safely(load);
+  refresh();
   return () => {
     destroyed = true;
     clearComponents();

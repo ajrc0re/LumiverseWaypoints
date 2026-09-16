@@ -135,6 +135,17 @@ class FakeLumiverse {
 }
 
 describe("WaypointEngine prompt and processor", () => {
+  test("an explicit empty frontend selection never falls back to the backend's previous chat", async () => {
+    const host = new FakeLumiverse();
+    const engine = new WaypointEngine(host.api);
+    expect((await engine.view()).chatId).toBe("chat");
+    const empty = await engine.view(null);
+    expect(empty.chatId).toBeNull();
+    expect(empty.characters).toEqual([]);
+    expect(empty.greetings).toEqual([]);
+    expect(empty.prompt.ready).toBe(false);
+  });
+
   test("adds the rendered prompt at the configured interceptor depth with breakdown attribution", async () => {
     const host = new FakeLumiverse();
     host.settings = { ...DEFAULT_SETTINGS, autoPrompt: true, insertionDepth: 1 };

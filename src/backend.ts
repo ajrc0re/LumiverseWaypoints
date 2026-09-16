@@ -155,7 +155,7 @@ async function handleRequest(raw: unknown, userId?: string): Promise<void> {
     switch (request.action) {
       case "bootstrap":
       case "refresh":
-        result = await current.view(selectedChatId);
+        result = await current.view(input.chatId === null ? null : selectedChatId);
         break;
       case "save-settings":
         result = await current.saveSettings(input.settings);

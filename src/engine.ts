@@ -698,7 +698,7 @@ export class WaypointEngine {
     }
   }
 
-  async view(chatId?: string): Promise<WaypointsView> {
+  async view(chatId?: string | null): Promise<WaypointsView> {
     const settings = await this.settings();
     const grantedPermissions = await this.api.permissions.getGranted().catch(() => []);
     const missingPermissions = this.missingPermissions(["characters", "chats", "chat_mutation", "generation", "interceptor"]);
@@ -726,7 +726,7 @@ export class WaypointEngine {
         diagnostics: this.diagnostics(),
       };
     }
-    const resolvedChatId = chatId ?? await this.getActiveChatId(settings);
+    const resolvedChatId = chatId === undefined ? await this.getActiveChatId(settings) : chatId;
     if (!resolvedChatId) {
       return {
         chatId: null,

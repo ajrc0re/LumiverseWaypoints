@@ -1090,7 +1090,7 @@ class WaypointEngine {
         diagnostics: this.diagnostics()
       };
     }
-    const resolvedChatId = chatId ?? await this.getActiveChatId(settings);
+    const resolvedChatId = chatId === undefined ? await this.getActiveChatId(settings) : chatId;
     if (!resolvedChatId) {
       return {
         chatId: null,
@@ -1306,7 +1306,7 @@ async function handleRequest(raw, userId) {
     switch (request.action) {
       case "bootstrap":
       case "refresh":
-        result = await current.view(selectedChatId);
+        result = await current.view(input.chatId === null ? null : selectedChatId);
         break;
       case "save-settings":
         result = await current.saveSettings(input.settings);
