@@ -259,6 +259,12 @@ function validateSettings(input) {
 }
 
 // src/frontend-model.ts
+function approximatePromptTokenCount(characterCount) {
+  return Math.max(0, Math.ceil(Math.max(0, characterCount) / 4));
+}
+function formatPromptCount(tokenCount, characterCount, approximate) {
+  return (approximate ? "~" : "") + String(Math.max(0, Math.round(tokenCount))) + " Tokens / " + String(Math.max(0, characterCount)) + " Characters";
+}
 function cloneSettingsDraft(settings) {
   return structuredClone(settings);
 }
@@ -312,7 +318,7 @@ var waypointStyles = [
   ".wp-notice.error{border-color:#e66161;background:color-mix(in srgb,#e66161 11%,transparent)}",
   ".wp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}.wp-field{min-width:0;margin:0 0 12px}",
   ".wp-field>label,.wp-label{display:block;font-weight:600;margin-bottom:4px}.wp-help{font-size:12px;color:var(--lumiverse-text-muted,#9da0a8);margin:3px 0 6px}",
-  ".wp-native{min-height:32px}.wp-preview{white-space:pre-wrap;max-height:180px;overflow:auto;background:var(--lumiverse-bg,#16171b);border:1px solid var(--lumiverse-border,#34363c);border-radius:6px;padding:9px;margin:6px 0 0;font:12px/1.35 ui-monospace,Consolas,monospace}",
+  ".wp-native{min-height:32px}.wp-prompt-count{display:inline-flex;align-items:center;margin:6px 0 2px;padding:4px 7px;border:1px solid var(--lumiverse-border,#34363c);border-radius:5px;color:var(--lumiverse-text-muted,#9da0a8);font:600 12px/1.25 ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums}.wp-preview{white-space:pre-wrap;max-height:180px;overflow:auto;background:var(--lumiverse-bg,#16171b);border:1px solid var(--lumiverse-border,#34363c);border-radius:6px;padding:9px;margin:6px 0 0;font:12px/1.35 ui-monospace,Consolas,monospace}",
   ".wp-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.wp-row.between{justify-content:space-between}.wp-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}",
   ".wp-button{appearance:none;border:1px solid var(--lumiverse-border,#4c4e56);border-radius:6px;background:var(--lumiverse-bg,#2a2b31);color:inherit;padding:6px 10px;cursor:pointer;font:inherit}",
   ".wp-button.primary{background:var(--lumiverse-primary,#796bdf);border-color:var(--lumiverse-primary,#796bdf);color:#fff}.wp-button.danger{border-color:#c75a5a}.wp-button:disabled{opacity:.48;cursor:not-allowed}",
@@ -415,6 +421,9 @@ function setup(ctx) {
   let extrasActions = [];
   let pickerModal;
   let pickerOpen = false;
+  let promptCountContent = "";
+  let promptCountDisplay = null;
+  let promptCountSequence = 0;
   const pending = new Map;
   let componentHandles = [];
   const disposers = [];
@@ -443,6 +452,36 @@ function setup(ctx) {
   function currentChatId() {
     return view?.chatId ?? ctx.getActiveChat().chatId ?? undefined;
   }
+  function refreshPromptCount(content) {
+    if (!content) {
+      promptCountContent = "";
+      promptCountDisplay = null;
+      promptCountSequence += 1;
+      return;
+    }
+    if (content === promptCountContent && promptCountDisplay !== null)
+      return;
+    const sequenceAtStart = ++promptCountSequence;
+    const characterCount = content.length;
+    promptCountContent = content;
+    promptCountDisplay = "Counting… / " + String(characterCount) + " Characters";
+    (async () => {
+      let tokenCount = approximatePromptTokenCount(characterCount);
+      let approximate = true;
+      try {
+        const result = ctx.tokens ? await ctx.tokens.countText(content) : undefined;
+        if (result && Number.isFinite(result.total_tokens)) {
+          tokenCount = result.total_tokens;
+          approximate = result.approximate || result.tokenizer_id === null;
+        }
+      } catch {}
+      if (destroyed || sequenceAtStart !== promptCountSequence || promptCountContent !== content)
+        return;
+      promptCountDisplay = formatPromptCount(tokenCount, characterCount, approximate);
+      if (page === "waypoints")
+        render();
+    })();
+  }
   function updateDraftValidation(target) {
     const result = draftValidation(draft);
     target.className = "wp-validation " + (result.valid ? "good" : "bad");
@@ -467,6 +506,7 @@ function setup(ctx) {
       draft = cloneSettingsDraft(loaded.settings);
       draftInitialized = true;
     }
+    refreshPromptCount(loaded.prompt.content);
     render();
     syncActionControls();
     syncHud();
@@ -925,6 +965,7 @@ function setup(ctx) {
     const promptText = view.prompt.ready ? view.prompt.autoPrompt ? "Auto-prompt is ON." : "Auto-prompt is OFF; add {{waypoints_content}} to a Loom preset to inject it." : view.prompt.reason ?? "No prompt is available.";
     prompt.append(element("p", "wp-muted", promptText + " Role: " + view.prompt.role + ". Depth: " + String(view.prompt.insertionDepth) + "."));
     if (view.prompt.content) {
+      prompt.append(element("div", "wp-prompt-count", promptCountDisplay ?? "Counting… / " + String(view.prompt.content.length) + " Characters"));
       const details2 = element("details", "wp-diagnostics");
       details2.append(element("summary", "", "Show rendered prompt"));
       details2.append(element("pre", "wp-preview", view.prompt.content));

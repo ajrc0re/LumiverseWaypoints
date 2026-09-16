@@ -4,6 +4,8 @@ import {
   canShowHud,
   cloneSettingsDraft,
   draftValidation,
+  approximatePromptTokenCount,
+  formatPromptCount,
   greetingPickerOptions,
   nextDrawerPage,
   resetSettingsDraft,
@@ -12,6 +14,12 @@ import {
 import type { Greeting, WaypointsView } from "../src/types";
 
 describe("drawer model", () => {
+  test("formats exact and approximate rendered prompt counts", () => {
+    expect(formatPromptCount(1234, 5678, false)).toBe("1234 Tokens / 5678 Characters");
+    expect(formatPromptCount(1234, 5678, true)).toBe("~1234 Tokens / 5678 Characters");
+    expect(approximatePromptTokenCount(5678)).toBe(1420);
+  });
+
   test("switches between Waypoints and Settings tabs", () => {
     expect(nextDrawerPage("waypoints", "next")).toBe("settings");
     expect(nextDrawerPage("settings", "previous")).toBe("waypoints");

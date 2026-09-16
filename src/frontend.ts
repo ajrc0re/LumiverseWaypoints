@@ -9,6 +9,8 @@ import {
   canShowHud,
   cloneSettingsDraft,
   draftValidation,
+  approximatePromptTokenCount,
+  formatPromptCount,
   greetingPickerOptions,
   shouldRefreshDrawer,
   type GreetingPickerKind,
@@ -115,6 +117,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let extrasActions: SpindleInputBarActionHandle[] = [];
   let pickerModal: SpindleModalHandle | undefined;
   let pickerOpen = false;
+  let promptCountContent = "";
+  let promptCountDisplay: string | null = null;
+  let promptCountSequence = 0;
   const pending = new Map<string, {
     resolve: (value: unknown) => void;
     reject: (reason: Error) => void;
@@ -150,6 +155,38 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     return view?.chatId ?? ctx.getActiveChat().chatId ?? undefined;
   }
 
+  function refreshPromptCount(content: string): void {
+    if (!content) {
+      promptCountContent = "";
+      promptCountDisplay = null;
+      promptCountSequence += 1;
+      return;
+    }
+    if (content === promptCountContent && promptCountDisplay !== null) return;
+
+    const sequenceAtStart = ++promptCountSequence;
+    const characterCount = content.length;
+    promptCountContent = content;
+    promptCountDisplay = "Counting… / " + String(characterCount) + " Characters";
+
+    void (async () => {
+      let tokenCount = approximatePromptTokenCount(characterCount);
+      let approximate = true;
+      try {
+        const result = ctx.tokens ? await ctx.tokens.countText(content) : undefined;
+        if (result && Number.isFinite(result.total_tokens)) {
+          tokenCount = result.total_tokens;
+          approximate = result.approximate || result.tokenizer_id === null;
+        }
+      } catch {
+        // The local fallback remains visibly approximate when token counting is unavailable.
+      }
+      if (destroyed || sequenceAtStart !== promptCountSequence || promptCountContent !== content) return;
+      promptCountDisplay = formatPromptCount(tokenCount, characterCount, approximate);
+      if (page === "waypoints") render();
+    })();
+  }
+
   function updateDraftValidation(target: HTMLElement): void {
     const result = draftValidation(draft);
     target.className = "wp-validation " + (result.valid ? "good" : "bad");
@@ -181,6 +218,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       draft = cloneSettingsDraft(loaded.settings);
       draftInitialized = true;
     }
+    refreshPromptCount(loaded.prompt.content);
     render();
     syncActionControls();
     syncHud();
@@ -679,6 +717,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       promptText + " Role: " + view.prompt.role + ". Depth: " + String(view.prompt.insertionDepth) + ".",
     ));
     if (view.prompt.content) {
+      prompt.append(element("div", "wp-prompt-count", promptCountDisplay ?? ("Counting… / " + String(view.prompt.content.length) + " Characters")));
       const details = element("details", "wp-diagnostics");
       details.append(element("summary", "", "Show rendered prompt"));
       details.append(element("pre", "wp-preview", view.prompt.content));

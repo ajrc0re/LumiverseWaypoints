@@ -4,6 +4,14 @@ import type { Greeting, WaypointSettings, WaypointsView } from "./types";
 export type DrawerPage = "waypoints" | "settings";
 export type GreetingPickerKind = "current" | "next";
 
+export function approximatePromptTokenCount(characterCount: number): number {
+  return Math.max(0, Math.ceil(Math.max(0, characterCount) / 4));
+}
+
+export function formatPromptCount(tokenCount: number, characterCount: number, approximate: boolean): string {
+  return (approximate ? "~" : "") + String(Math.max(0, Math.round(tokenCount))) + " Tokens / " + String(Math.max(0, characterCount)) + " Characters";
+}
+
 export function nextDrawerPage(current: DrawerPage, direction: "previous" | "next"): DrawerPage {
   if (direction === "next") return current === "waypoints" ? "settings" : "waypoints";
   return current === "settings" ? "waypoints" : "settings";
