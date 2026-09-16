@@ -150,6 +150,20 @@ describe("WaypointEngine prompt and processor", () => {
     expect(intercepted.breakdown).toEqual([{ messageIndex: 1, name: "Waypoints: upcoming scene" }]);
   });
 
+  test("exposes read-only Loom values only while the selected Waypoints path is ready", async () => {
+    const host = new FakeLumiverse();
+    const engine = new WaypointEngine(host.api);
+
+    const ready = await engine.loomValues("chat");
+    expect(ready.active).toBe(true);
+    expect(ready.content).toContain("Greeting 2");
+    // Macro previews must not create a chat variable or reconcile state.
+    expect(host.variables.size).toBe(0);
+
+    await engine.setEnabled("chat", "a", false);
+    expect(await engine.loomValues("chat")).toEqual({ active: false, content: "" });
+  });
+
   test("strips and stamps configured handoff tags in the content processor", async () => {
     const host = new FakeLumiverse();
     const engine = new WaypointEngine(host.api);

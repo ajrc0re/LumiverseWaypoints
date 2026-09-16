@@ -5,6 +5,7 @@ import type {
 } from "lumiverse-spindle-types";
 import { DEFAULT_SETTINGS } from "./config";
 import { hashText, WaypointEngine } from "./engine";
+import { registerWaypointsLoomMacros } from "./loom-macros";
 import type { GreetingSelection, WaypointSettings } from "./types";
 
 declare const spindle: SpindleAPI;
@@ -27,6 +28,8 @@ function engine(userId?: string): WaypointEngine {
   }
   return current;
 }
+
+registerWaypointsLoomMacros(spindle, ({ chatId, userId }) => engine(userId).loomValues(chatId));
 
 function safeRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)

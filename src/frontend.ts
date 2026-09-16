@@ -335,7 +335,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const prompt = element("section", "wp-section");
     prompt.append(element("h3", "", "Rendered prompt status"));
     const promptText = view.prompt.ready
-      ? (view.prompt.autoPrompt ? "Auto-prompt is ON." : "Auto-prompt is OFF; this is a preview only.")
+      ? (view.prompt.autoPrompt ? "Auto-prompt is ON." : "Auto-prompt is OFF; add {{waypoints_content}} to a Loom preset to inject it.")
       : (view.prompt.reason ?? "No prompt is available.");
     prompt.append(element(
       "p",
@@ -458,12 +458,26 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     componentHandles.push(ctx.components.mountCheckbox(autoTarget, {
       checked: draft.autoPrompt,
       label: "Automatically insert the rendered prompt before generation",
-      hint: "Off by default. When off, Waypoints still shows the rendered prompt for review.",
+      hint: "Off by default. Keep it off when a Loom preset injects {{waypoints_content}}, so the prompt is not added twice.",
       onChange: (checked) => {
         draft.autoPrompt = checked;
         updateDraftValidation(validation);
       },
     }));
+
+    const loomHelp = element("div", "wp-loom-help");
+    loomHelp.append(element("div", "wp-label", "Loom preset macros"));
+    loomHelp.append(element(
+      "p",
+      "wp-help",
+      "Use these extension macros in a Loom block. They are not local variables, so do not add a leading dot.",
+    ));
+    loomHelp.append(element(
+      "pre",
+      "wp-preview",
+      "{{if::{{waypoints_active}}}}\n{{waypoints_content}}\n{{/if}}",
+    ));
+    settings.append(loomHelp);
 
     settings.append(element("div", "wp-divider"));
     settings.append(element("h4", "", "Handoff"));

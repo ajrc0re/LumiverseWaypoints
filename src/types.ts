@@ -124,6 +124,12 @@ export interface PromptStatus {
   reason?: string;
 }
 
+/** Values exposed to Loom through the Waypoints extension macros. */
+export interface WaypointLoomValues {
+  active: boolean;
+  content: string;
+}
+
 export interface CharacterView {
   id: string;
   name: string;

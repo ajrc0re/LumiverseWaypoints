@@ -39,6 +39,7 @@ import type {
   TransitionJournal,
   TransitionResult,
   WaypointChatState,
+  WaypointLoomValues,
   WaypointSettings,
   WaypointsView,
 } from "./types";
@@ -665,6 +666,35 @@ export class WaypointEngine {
     } catch (error) {
       this.warn("prompt interceptor skipped: " + (error instanceof Error ? error.message : String(error)));
       return messages;
+    }
+  }
+
+  /**
+   * Read-only values for Loom macros. This intentionally does not reconcile or
+   * persist a journal: macro resolution can be a dry pass and must not mutate
+   * chat state simply because a preset was previewed.
+   */
+  async loomValues(chatId?: string): Promise<WaypointLoomValues> {
+    if (!chatId || this.missingPermissions(CONTEXT_PERMISSIONS).length) {
+      return { active: false, content: "" };
+    }
+    try {
+      return this.serial(chatId, async () => {
+        const settings = await this.settings();
+        const context = await this.context(chatId);
+        const state = reconcileChatState(await this.state(chatId), context);
+        const active = greetingForSelection(context.greetings, state.active);
+        const prompt = this.promptStatus(context, state, settings);
+        const ready = Boolean(
+          active
+          && this.isSelectionEnabled(context, state, state.active)
+          && prompt.ready
+          && prompt.content,
+        );
+        return { active: ready, content: ready ? prompt.content : "" };
+      });
+    } catch {
+      return { active: false, content: "" };
     }
   }
 

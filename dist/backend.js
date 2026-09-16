@@ -1040,6 +1040,24 @@ class WaypointEngine {
       return messages;
     }
   }
+  async loomValues(chatId) {
+    if (!chatId || this.missingPermissions(CONTEXT_PERMISSIONS).length) {
+      return { active: false, content: "" };
+    }
+    try {
+      return this.serial(chatId, async () => {
+        const settings = await this.settings();
+        const context = await this.context(chatId);
+        const state = reconcileChatState(await this.state(chatId), context);
+        const active = greetingForSelection(context.greetings, state.active);
+        const prompt = this.promptStatus(context, state, settings);
+        const ready = Boolean(active && this.isSelectionEnabled(context, state, state.active) && prompt.ready && prompt.content);
+        return { active: ready, content: ready ? prompt.content : "" };
+      });
+    } catch {
+      return { active: false, content: "" };
+    }
+  }
   async view(chatId) {
     const settings = await this.settings();
     const grantedPermissions = await this.api.permissions.getGranted().catch(() => []);
@@ -1125,6 +1143,47 @@ class WaypointEngine {
   }
 }
 
+// src/loom-macros.ts
+var WAYPOINTS_ACTIVE_MACRO = "waypoints_active";
+var WAYPOINTS_CONTENT_MACRO = "waypoints_content";
+function record(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+function macroIdentity(context) {
+  const value = record(context);
+  const env = record(value.env);
+  const chat = record(env.chat);
+  const extra = record(env.extra);
+  return {
+    chatId: nonEmptyString(value.chatId) ?? nonEmptyString(chat.id),
+    userId: nonEmptyString(value.userId) ?? nonEmptyString(extra.userId)
+  };
+}
+function register(api, name, description, returnType, resolver, select) {
+  const definition = {
+    name,
+    category: "Waypoints",
+    description,
+    returnType,
+    volatile: true,
+    handler: async (context) => {
+      try {
+        return select(await resolver(macroIdentity(context)));
+      } catch {
+        return returnType === "boolean" ? "false" : "";
+      }
+    }
+  };
+  api.registerMacro(definition);
+}
+function registerWaypointsLoomMacros(api, resolver) {
+  register(api, WAYPOINTS_ACTIVE_MACRO, "Returns true when the selected Waypoints path is enabled and has a rendered upcoming-scene prompt.", "boolean", resolver, (values) => values.active ? "true" : "false");
+  register(api, WAYPOINTS_CONTENT_MACRO, "Returns the current Waypoints rendered upcoming-scene prompt for use in a Loom preset.", "string", resolver, (values) => values.active ? values.content : "");
+}
+
 // src/backend.ts
 var engines = new Map;
 var interceptorDisposer;
@@ -1143,6 +1202,7 @@ function engine(userId) {
   }
   return current;
 }
+registerWaypointsLoomMacros(spindle, ({ chatId, userId }) => engine(userId).loomValues(chatId));
 function safeRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }

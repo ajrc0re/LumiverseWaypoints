@@ -72,6 +72,18 @@ The exclusion regex runs before the excerpt is truncated. It accepts JavaScript-
 
 You can also configure the prompt role, insertion depth (`0` is the newest edge), and whether automatic prompt insertion is enabled.
 
+### Loom preset injection
+
+If you prefer Loom to place the guidance, leave **Auto-prompt** off and put this in the appropriate Loom prompt block:
+
+```text
+{{if::{{waypoints_active}}}}
+{{waypoints_content}}
+{{/if}}
+```
+
+`{{waypoints_active}}` returns `true` only when the selected Waypoints path is enabled and has a renderable upcoming scene. `{{waypoints_content}}` returns that same rendered scene prompt. These are Waypoints extension macros, not local variables, so use them without a leading `.`. The Loom block controls placement and role; Waypoints' automatic-insertion role and depth apply only when **Auto-prompt** is on. Do not enable both paths unless you intentionally want the guidance twice.
+
 ### Handoff and advanced behavior
 
 The handoff tag name and override marker are validated before save. Advanced settings expose interceptor/content-processor priority, chat and handoff-read retries, retry delay, pending-handoff and dedupe-journal limits, and diagnostic retention.

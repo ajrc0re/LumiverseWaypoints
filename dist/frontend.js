@@ -304,6 +304,7 @@ var waypointStyles = [
   ".wp-character{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid var(--lumiverse-border,#34363c)}.wp-character:first-child{border-top:0}",
   ".wp-character-name{font-weight:600}.wp-kicker{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--lumiverse-text-muted,#9da0a8)}",
   ".wp-validation{font-size:12px;margin:4px 0 8px}.wp-validation.good{color:#77c68e}.wp-validation.bad{color:#ef8b8b}",
+  ".wp-loom-help{margin-top:12px;padding:10px;border:1px solid var(--lumiverse-border,#34363c);border-radius:7px;background:color-mix(in srgb,var(--lumiverse-bg,#16171b) 65%,transparent)}.wp-loom-help .wp-preview{margin-bottom:0}",
   ".wp-code{font-family:ui-monospace,Consolas,monospace;background:var(--lumiverse-bg,#16171b);border-radius:4px;padding:2px 5px}",
   ".wp-diagnostics summary{cursor:pointer;font-weight:600}.wp-diagnostics pre{max-height:240px}.wp-divider{height:1px;background:var(--lumiverse-border,#34363c);margin:14px 0}",
   ".wp-hud{display:flex;align-items:center;gap:5px;height:100%;box-sizing:border-box;background:var(--lumiverse-bg-elevated,#202126);border:1px solid var(--lumiverse-border,#34363c);border-radius:8px;padding:5px 7px;box-shadow:0 4px 16px #0006}.wp-hud-label{font-weight:700;font-size:12px;margin-right:2px}.wp-hud .wp-button{font-size:11px;padding:4px 6px}",
@@ -590,7 +591,7 @@ function setup(ctx) {
     parent.append(enabled);
     const prompt = element("section", "wp-section");
     prompt.append(element("h3", "", "Rendered prompt status"));
-    const promptText = view.prompt.ready ? view.prompt.autoPrompt ? "Auto-prompt is ON." : "Auto-prompt is OFF; this is a preview only." : view.prompt.reason ?? "No prompt is available.";
+    const promptText = view.prompt.ready ? view.prompt.autoPrompt ? "Auto-prompt is ON." : "Auto-prompt is OFF; add {{waypoints_content}} to a Loom preset to inject it." : view.prompt.reason ?? "No prompt is available.";
     prompt.append(element("p", "wp-muted", promptText + " Role: " + view.prompt.role + ". Depth: " + String(view.prompt.insertionDepth) + "."));
     if (view.prompt.content) {
       const details2 = element("details", "wp-diagnostics");
@@ -698,12 +699,19 @@ function setup(ctx) {
     componentHandles.push(ctx.components.mountCheckbox(autoTarget, {
       checked: draft.autoPrompt,
       label: "Automatically insert the rendered prompt before generation",
-      hint: "Off by default. When off, Waypoints still shows the rendered prompt for review.",
+      hint: "Off by default. Keep it off when a Loom preset injects {{waypoints_content}}, so the prompt is not added twice.",
       onChange: (checked) => {
         draft.autoPrompt = checked;
         updateDraftValidation(validation);
       }
     }));
+    const loomHelp = element("div", "wp-loom-help");
+    loomHelp.append(element("div", "wp-label", "Loom preset macros"));
+    loomHelp.append(element("p", "wp-help", "Use these extension macros in a Loom block. They are not local variables, so do not add a leading dot."));
+    loomHelp.append(element("pre", "wp-preview", `{{if::{{waypoints_active}}}}
+{{waypoints_content}}
+{{/if}}`));
+    settings.append(loomHelp);
     settings.append(element("div", "wp-divider"));
     settings.append(element("h4", "", "Handoff"));
     const handoffGrid = element("div", "wp-grid");

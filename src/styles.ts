@@ -19,6 +19,7 @@ export const waypointStyles = [
   ".wp-character{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-top:1px solid var(--lumiverse-border,#34363c)}.wp-character:first-child{border-top:0}",
   ".wp-character-name{font-weight:600}.wp-kicker{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--lumiverse-text-muted,#9da0a8)}",
   ".wp-validation{font-size:12px;margin:4px 0 8px}.wp-validation.good{color:#77c68e}.wp-validation.bad{color:#ef8b8b}",
+  ".wp-loom-help{margin-top:12px;padding:10px;border:1px solid var(--lumiverse-border,#34363c);border-radius:7px;background:color-mix(in srgb,var(--lumiverse-bg,#16171b) 65%,transparent)}.wp-loom-help .wp-preview{margin-bottom:0}",
   ".wp-code{font-family:ui-monospace,Consolas,monospace;background:var(--lumiverse-bg,#16171b);border-radius:4px;padding:2px 5px}",
   ".wp-diagnostics summary{cursor:pointer;font-weight:600}.wp-diagnostics pre{max-height:240px}.wp-divider{height:1px;background:var(--lumiverse-border,#34363c);margin:14px 0}",
   ".wp-hud{display:flex;align-items:center;gap:5px;height:100%;box-sizing:border-box;background:var(--lumiverse-bg-elevated,#202126);border:1px solid var(--lumiverse-border,#34363c);border-radius:8px;padding:5px 7px;box-shadow:0 4px 16px #0006}.wp-hud-label{font-weight:700;font-size:12px;margin-right:2px}.wp-hud .wp-button{font-size:11px;padding:4px 6px}",
