@@ -1,0 +1,20 @@
+{
+  "name": "Waypoints",
+  "identifier": "lumiverse_waypoints",
+  "version": "1.0.0",
+  "author": "ajrc0re",
+  "github": "https://github.com/ajrc0re/LumiverseWaypoints",
+  "homepage": "https://github.com/ajrc0re/LumiverseWaypoints",
+  "description": "Guide chats through character greetings as intentional story waypoints.",
+  "permissions": [
+    "characters",
+    "chats",
+    "chat_mutation",
+    "interceptor",
+    "generation",
+    "ui_panels"
+  ],
+  "entry_backend": "dist/backend.js",
+  "entry_frontend": "dist/frontend.js",
+  "minimum_lumiverse_version": "1.2.0"
+}
