@@ -39,7 +39,9 @@ var DEFAULT_SETTINGS = {
   recentTransitionLimit: 40,
   diagnosticLogging: true,
   diagnosticLineLimit: 96,
-  floatingControls: true
+  floatingControls: true,
+  actionBarButton: true,
+  extrasActions: true
 };
 
 class SettingsValidationError extends Error {
@@ -219,7 +221,9 @@ function validateSettings(input) {
     recentTransitionLimit: readInteger(source, "recentTransitionLimit", DEFAULT_SETTINGS.recentTransitionLimit, 1, 500, issues),
     diagnosticLogging: readBoolean(source, "diagnosticLogging", DEFAULT_SETTINGS.diagnosticLogging, issues),
     diagnosticLineLimit: readInteger(source, "diagnosticLineLimit", DEFAULT_SETTINGS.diagnosticLineLimit, 10, 500, issues),
-    floatingControls: readBoolean(source, "floatingControls", DEFAULT_SETTINGS.floatingControls, issues)
+    floatingControls: readBoolean(source, "floatingControls", DEFAULT_SETTINGS.floatingControls, issues),
+    actionBarButton: readBoolean(source, "actionBarButton", DEFAULT_SETTINGS.actionBarButton, issues),
+    extrasActions: readBoolean(source, "extrasActions", DEFAULT_SETTINGS.extrasActions, issues)
   };
   if (!settings.promptTemplate.includes("{{scene_excerpt}}")) {
     issues.push({ field: "template", message: "Prompt template must include {{scene_excerpt}}." });

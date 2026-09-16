@@ -46,6 +46,8 @@ export const DEFAULT_SETTINGS: WaypointSettings = {
   diagnosticLogging: true,
   diagnosticLineLimit: 96,
   floatingControls: true,
+  actionBarButton: true,
+  extrasActions: true,
 };
 
 export class SettingsValidationError extends Error {
@@ -253,6 +255,8 @@ export function validateSettings(input: unknown): SettingsValidationResult {
     diagnosticLogging: readBoolean(source, "diagnosticLogging", DEFAULT_SETTINGS.diagnosticLogging, issues),
     diagnosticLineLimit: readInteger(source, "diagnosticLineLimit", DEFAULT_SETTINGS.diagnosticLineLimit, 10, 500, issues),
     floatingControls: readBoolean(source, "floatingControls", DEFAULT_SETTINGS.floatingControls, issues),
+    actionBarButton: readBoolean(source, "actionBarButton", DEFAULT_SETTINGS.actionBarButton, issues),
+    extrasActions: readBoolean(source, "extrasActions", DEFAULT_SETTINGS.extrasActions, issues),
   };
 
   if (!settings.promptTemplate.includes("{{scene_excerpt}}")) {

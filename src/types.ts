@@ -26,6 +26,8 @@ export interface WaypointSettings {
   diagnosticLogging: boolean;
   diagnosticLineLimit: number;
   floatingControls: boolean;
+  actionBarButton: boolean;
+  extrasActions: boolean;
 }
 
 export interface GreetingSelection {

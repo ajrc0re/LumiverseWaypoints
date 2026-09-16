@@ -1,6 +1,7 @@
 import type {
   SpindleFloatWidgetHandle,
   SpindleFrontendContext,
+  SpindleInputBarActionHandle,
 } from "lumiverse-spindle-types";
 import { DEFAULT_SETTINGS } from "./config";
 import { canShowHud, cloneSettingsDraft, draftValidation, shouldRefreshDrawer } from "./frontend-model";
@@ -60,6 +61,8 @@ function compactPreview(value: string, limit = 580): string {
   return value.length > limit ? value.slice(0, limit) + "…" : value;
 }
 
+const WAYPOINTS_COMPASS_ICON = "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"8.5\"/><path d=\"m15.5 8.5-2.7 5-5 2.7 2.7-5 5-2.7Z\"/><circle cx=\"12\" cy=\"12\" r=\"1\" fill=\"currentColor\" stroke=\"none\"/></svg>";
+
 export function setup(ctx: SpindleFrontendContext): () => void {
   const tab = ctx.ui.registerDrawerTab({
     id: "waypoints",
@@ -74,6 +77,22 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const root = element("div", "wp-root");
   tab.root.append(root);
   const removeStyle = ctx.dom.addStyle(waypointStyles);
+  let actionBarMount: HTMLElement | null = null;
+  try {
+    actionBarMount = ctx.ui.mount("chat_actions") as HTMLElement;
+    actionBarMount.classList.add("wp-action-bar-mount");
+  } catch (error) {
+    console.warn("[Waypoints] action-bar mount unavailable", error);
+  }
+  const actionBarButton = actionBarMount ? element("button", "wp-action-bar-button") : null;
+  if (actionBarButton && actionBarMount) {
+    actionBarButton.type = "button";
+    actionBarButton.innerHTML = WAYPOINTS_COMPASS_ICON;
+    actionBarButton.title = "Waypoints controls";
+    actionBarButton.setAttribute("aria-label", "Waypoints controls");
+    actionBarButton.hidden = true;
+    actionBarMount.append(actionBarButton);
+  }
 
   let page: "waypoints" | "settings" = "waypoints";
   let view: WaypointsView | null = null;
@@ -85,6 +104,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let noticeError = false;
   let sequence = 0;
   let hud: SpindleFloatWidgetHandle | undefined;
+  let extrasActions: SpindleInputBarActionHandle[] = [];
   const pending = new Map<string, {
     resolve: (value: unknown) => void;
     reject: (reason: Error) => void;
@@ -152,12 +172,14 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       draftInitialized = true;
     }
     render();
+    syncActionControls();
     syncHud();
   }
 
   async function safely(action: () => Promise<void>): Promise<void> {
     if (busy) return;
     busy = true;
+    syncActionControls();
     render();
     try {
       await action();
@@ -166,9 +188,144 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     } finally {
       busy = false;
       render();
+      syncActionControls();
       syncHud();
     }
   }
+
+  function selectedControlCharacter() {
+    if (!view) return undefined;
+    const selectedGreeting = view.upcoming ?? view.active;
+    return selectedGreeting
+      ? view.characters.find((character) => character.id === selectedGreeting.characterId)
+      : undefined;
+  }
+
+  async function toggleSelectedCharacter(): Promise<void> {
+    const character = selectedControlCharacter();
+    if (!character) throw new Error("Choose an active or upcoming greeting first.");
+    const chatId = currentChatId();
+    if (!chatId) throw new Error("Open a chat first.");
+    await rpc("set-enabled", {
+      chatId,
+      characterId: character.id,
+      enabled: !character.enabled,
+    });
+    await load();
+  }
+
+  async function forceTransition(): Promise<void> {
+    const result = await rpc("force", { chatId: currentChatId() });
+    const transition = isRecord(result) ? safeTransitionText(result.transition) : "";
+    if (transition) setNotice(transition);
+    await load();
+  }
+
+  async function undoTransition(): Promise<void> {
+    const result = await rpc("undo", { chatId: currentChatId() });
+    const transition = isRecord(result) ? safeTransitionText(result.transition) : "";
+    if (transition) setNotice(transition);
+    await load();
+  }
+
+  async function openActionBarMenu(): Promise<void> {
+    if (!actionBarButton || busy || !view) return;
+    const character = selectedControlCharacter();
+    const rect = actionBarButton.getBoundingClientRect();
+    let result: { selectedKey: string | null };
+    try {
+      result = await ctx.ui.showContextMenu({
+        position: { x: rect.left, y: rect.bottom + 4 },
+        items: [
+          {
+            key: "toggle",
+            label: character
+              ? (character.enabled ? "Disable Waypoints" : "Enable Waypoints") + " — " + character.name
+              : "Toggle Waypoints",
+            active: character?.enabled,
+            disabled: !character,
+          },
+          { key: "force", label: "Force next greeting", disabled: !view.upcoming || busy },
+          { key: "undo", label: "Undo last insertion", disabled: !view.canUndo || busy },
+          { key: "divider", label: "", type: "divider" },
+          { key: "open", label: "Open Waypoints drawer" },
+        ],
+      });
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error), true);
+      render();
+      return;
+    }
+    if (result.selectedKey === "toggle") void safely(toggleSelectedCharacter);
+    else if (result.selectedKey === "force") void safely(forceTransition);
+    else if (result.selectedKey === "undo") void safely(undoTransition);
+    else if (result.selectedKey === "open") tab.activate();
+  }
+
+  function syncActionControls(): void {
+    const character = selectedControlCharacter();
+    const settings = view?.settings;
+    const actionBarVisible = settings?.actionBarButton === true;
+    if (actionBarMount) actionBarMount.hidden = !actionBarVisible;
+    if (actionBarButton) {
+      actionBarButton.hidden = !actionBarVisible;
+      actionBarButton.disabled = busy || !view;
+      actionBarButton.title = character
+        ? "Waypoints controls — " + (character.enabled ? "ON" : "OFF")
+        : "Waypoints controls";
+      actionBarButton.setAttribute("aria-label", actionBarButton.title);
+    }
+    const extrasVisible = settings?.extrasActions === true;
+    for (const action of extrasActions) action.setEnabled(extrasVisible);
+    if (extrasActions.length < 3) return;
+    extrasActions[0].setLabel(character
+      ? (character.enabled ? "Disable Waypoints" : "Enable Waypoints")
+      : "Toggle Waypoints");
+    extrasActions[0].setSubtitle(character?.name ?? "Choose an active or upcoming greeting");
+    extrasActions[1].setLabel("Undo last Waypoints insertion");
+    extrasActions[1].setSubtitle(view?.canUndo ? "Remove the latest Waypoints greeting" : "No Waypoints insertion available");
+    extrasActions[2].setLabel("Force next Waypoints greeting");
+    extrasActions[2].setSubtitle(view?.upcoming ? "Insert the selected upcoming greeting" : "Choose an upcoming greeting first");
+  }
+
+  function registerExtrasActions(): void {
+    const registered: SpindleInputBarActionHandle[] = [];
+    try {
+      registered.push(ctx.ui.registerInputBarAction({
+        id: "toggle-waypoints",
+        label: "Toggle Waypoints",
+        subtitle: "Enable or disable the selected character",
+        iconSvg: WAYPOINTS_COMPASS_ICON,
+        enabled: false,
+      }));
+      registered.push(ctx.ui.registerInputBarAction({
+        id: "undo-waypoints",
+        label: "Undo last Waypoints insertion",
+        subtitle: "Remove the latest Waypoints greeting",
+        iconSvg: WAYPOINTS_COMPASS_ICON,
+        enabled: false,
+      }));
+      registered.push(ctx.ui.registerInputBarAction({
+        id: "force-waypoints",
+        label: "Force next Waypoints greeting",
+        subtitle: "Insert the selected upcoming greeting",
+        iconSvg: WAYPOINTS_COMPASS_ICON,
+        enabled: false,
+      }));
+      extrasActions = registered;
+      disposers.push(
+        registered[0].onClick(() => { void safely(toggleSelectedCharacter); }),
+        registered[1].onClick(() => { void safely(undoTransition); }),
+        registered[2].onClick(() => { void safely(forceTransition); }),
+      );
+    } catch (error) {
+      for (const action of registered) action.destroy();
+      console.warn("[Waypoints] Extras actions unavailable", error);
+    }
+  }
+
+  if (actionBarButton) actionBarButton.onclick = () => { void openActionBarMenu(); };
+  registerExtrasActions();
 
   function button(
     label: string,
@@ -286,18 +443,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     selections.append(previews);
     const actions = element("div", "wp-actions");
     actions.append(
-      button("Force", () => safely(async () => {
-        const result = await rpc("force", { chatId: currentChatId() });
-        const transition = isRecord(result) ? safeTransitionText(result.transition) : "";
-        if (transition) setNotice(transition);
-        await load();
-      }), "primary", !view.upcoming),
-      button("Undo", () => safely(async () => {
-        const result = await rpc("undo", { chatId: currentChatId() });
-        const transition = isRecord(result) ? safeTransitionText(result.transition) : "";
-        if (transition) setNotice(transition);
-        await load();
-      }), "", !view.canUndo),
+      button("Force", () => safely(forceTransition), "primary", !view.upcoming),
+      button("Undo", () => safely(undoTransition), "", !view.canUndo),
     );
     selections.append(actions);
     parent.append(selections);
@@ -572,6 +719,28 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         updateDraftValidation(validation);
       },
     }));
+    const actionBarTarget = element("div", "wp-native");
+    settings.append(actionBarTarget);
+    componentHandles.push(ctx.components.mountCheckbox(actionBarTarget, {
+      checked: draft.actionBarButton,
+      label: "Show the compass button in the chat action bar",
+      hint: "Adds a compact Waypoints menu beside the buttons above the input box.",
+      onChange: (checked) => {
+        draft.actionBarButton = checked;
+        updateDraftValidation(validation);
+      },
+    }));
+    const extrasTarget = element("div", "wp-native");
+    settings.append(extrasTarget);
+    componentHandles.push(ctx.components.mountCheckbox(extrasTarget, {
+      checked: draft.extrasActions,
+      label: "Show Waypoints actions in the Extras menu",
+      hint: "Adds Toggle, Undo, and Force entries under Lumiverse's native Extras popover.",
+      onChange: (checked) => {
+        draft.extrasActions = checked;
+        updateDraftValidation(validation);
+      },
+    }));
 
     const actions = element("div", "wp-actions");
     actions.append(
@@ -636,28 +805,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     root.replaceChildren();
     root.className = "wp-hud";
     root.append(element("span", "wp-hud-label", "Waypoints"));
-    const selectedGreeting = view.upcoming ?? view.active;
-    const character = selectedGreeting
-      ? view.characters.find((entry) => entry.id === selectedGreeting.characterId)
-      : undefined;
+    const character = selectedControlCharacter();
     const enabled = character?.enabled ?? false;
-    root.append(button(enabled ? "ON" : "OFF", () => safely(async () => {
-      if (!character) throw new Error("Choose an upcoming greeting first.");
-      await rpc("set-enabled", {
-        chatId: currentChatId(),
-        characterId: character.id,
-        enabled: !enabled,
-      });
-      await load();
-    }), "", !character));
-    root.append(button("Undo", () => safely(async () => {
-      await rpc("undo", { chatId: currentChatId() });
-      await load();
-    }), "", !view.canUndo));
-    root.append(button("Force", () => safely(async () => {
-      await rpc("force", { chatId: currentChatId() });
-      await load();
-    }), "primary", !view.upcoming));
+    root.append(button(enabled ? "ON" : "OFF", () => safely(toggleSelectedCharacter), "", !character));
+    root.append(button("Undo", () => safely(undoTransition), "", !view.canUndo));
+    root.append(button("Force", () => safely(forceTransition), "primary", !view.upcoming));
   }
 
   function render(): void {
@@ -703,6 +855,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   }));
 
   render();
+  syncActionControls();
   ctx.ready();
   void safely(load);
 
@@ -716,6 +869,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
     pending.clear();
     hud?.destroy();
+    for (const action of extrasActions) action.destroy();
+    actionBarMount?.replaceChildren();
     tab.destroy();
     removeStyle();
   };

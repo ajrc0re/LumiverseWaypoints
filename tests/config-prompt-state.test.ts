@@ -22,6 +22,8 @@ import {
 describe("configuration and prompt rendering", () => {
   test("validates the required prompt placeholders and tag names", () => {
     expect(validateSettings(DEFAULT_SETTINGS).settings.handoffTagName).toBe("inject-prewritten-content");
+    expect(DEFAULT_SETTINGS.actionBarButton).toBe(true);
+    expect(DEFAULT_SETTINGS.extrasActions).toBe(true);
     expect(() => validateSettings({
       ...DEFAULT_SETTINGS,
       promptTemplate: "Only {{handoff_tag}}",
@@ -29,6 +31,10 @@ describe("configuration and prompt rendering", () => {
     expect(() => validateSettings({
       ...DEFAULT_SETTINGS,
       handoffTagName: "not valid",
+    })).toThrow(SettingsValidationError);
+    expect(() => validateSettings({
+      ...DEFAULT_SETTINGS,
+      actionBarButton: "yes",
     })).toThrow(SettingsValidationError);
   });
 

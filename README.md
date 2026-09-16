@@ -90,6 +90,13 @@ The handoff tag name and override marker are validated before save. Advanced set
 
 The optional floating ON / Undo / Force control is enabled by default. Lumiverse owns its drag position and reset behavior; Waypoints does not persist a competing position.
 
+The **Interface** section also controls two input-bar surfaces, both enabled by default:
+
+- **Compass button** mounts a compact Waypoints compass beside Lumiverse's native action-bar buttons above the input. Its themed menu contains Toggle, Force, Undo, and Open Waypoints drawer.
+- **Extras actions** adds Toggle, Undo, and Force entries to Lumiverse's native **Extras** popover under the Waypoints extension heading.
+
+These surfaces are independent of the floating widget. They do not require another permission; the actions still report missing `characters`, `chats`, or `chat_mutation` grants when an operation needs them. The host owns the Quick Replies, Tools, and Extras categories, so Waypoints cannot add native entries directly to Quick Replies or Tools or create another host category.
+
 ## Safety and recovery
 
 Before appending a greeting, Waypoints stores a persistent per-chat journal. The inserted assistant message is stamped with journal and selection metadata. On duplicate lifecycle events or a worker restart, Waypoints checks for that stamped message before it inserts again. This avoids double advancement while retaining recovery after an append succeeds just before the worker is interrupted.
