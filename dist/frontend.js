@@ -274,6 +274,17 @@ function draftValidation(settings) {
 function canShowHud(floatingControls, grantedPermissions) {
   return floatingControls && grantedPermissions.includes("ui_panels");
 }
+function greetingPickerOptions(kind, view) {
+  if (kind === "current")
+    return view.greetings;
+  const active = view.active;
+  if (!active)
+    return view.greetings;
+  if (view.isGroupChat) {
+    return view.greetings.filter((greeting) => greeting.characterId !== active.characterId || greeting.greetingIndex !== active.greetingIndex);
+  }
+  return view.greetings.filter((greeting) => greeting.characterId === active.characterId && greeting.greetingIndex > active.greetingIndex);
+}
 function shouldRefreshDrawer(eventName) {
   return eventName === "CHAT_SWITCHED" || eventName === "CHAT_CHANGED" || eventName === "waypoints:changed";
 }
@@ -312,8 +323,9 @@ var waypointStyles = [
   ".wp-code{font-family:ui-monospace,Consolas,monospace;background:var(--lumiverse-bg,#16171b);border-radius:4px;padding:2px 5px}",
   ".wp-diagnostics summary{cursor:pointer;font-weight:600}.wp-diagnostics pre{max-height:240px}.wp-divider{height:1px;background:var(--lumiverse-border,#34363c);margin:14px 0}",
   ".wp-action-bar-mount{display:contents}.wp-action-bar-button{appearance:none;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;flex:0 0 28px;padding:0;border:0;border-radius:4px;background:transparent;color:var(--lumiverse-text,#ececf1);cursor:pointer}.wp-action-bar-button:hover{background:var(--lumiverse-bg-hover,#34363c)}.wp-action-bar-button:focus-visible{outline:2px solid var(--lumiverse-primary,#8b7cff);outline-offset:-2px}.wp-action-bar-button:disabled{opacity:.45;cursor:not-allowed}.wp-action-bar-button svg{width:15px;height:15px}",
+  ".wp-picker{height:min(78vh,900px);min-height:min(560px,calc(100vh - 170px));display:flex;min-width:0;flex-direction:column;overflow:hidden;color:var(--lumiverse-text,#ececf1);font:13px/1.45 system-ui,sans-serif}.wp-picker *{box-sizing:border-box}.wp-picker-main{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:12px;padding:16px;overflow:hidden}.wp-picker-meta{color:var(--lumiverse-text-muted,#9da0a8);font-size:12px;line-height:1.35;overflow-wrap:anywhere}.wp-picker-field{display:grid;gap:6px;flex:0 0 auto}.wp-picker-label{color:var(--lumiverse-text-muted,#9da0a8);font-size:12px}.wp-picker-select{width:100%;min-height:38px;color:var(--lumiverse-text,#ececf1);background:var(--lumiverse-fill,rgba(255,255,255,.08));border:1px solid var(--lumiverse-border,#34363c);border-radius:6px;padding:8px 10px;font:inherit}.wp-picker-preview{flex:1 1 auto;min-height:0;overflow:auto;background:rgba(0,0,0,.22);border:1px solid var(--lumiverse-border,#34363c);border-radius:8px}.wp-picker-preview pre{margin:0;padding:14px;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;font:13px/1.45 ui-monospace,Consolas,monospace}.wp-picker-error{flex:0 0 auto;color:#ef8b8b;border-left:3px solid #e66161;background:color-mix(in srgb,#e66161 11%,transparent);padding:8px 10px;border-radius:4px}.wp-picker-footer{flex:0 0 auto;display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 16px 16px;border-top:1px solid var(--lumiverse-border,#34363c)}",
   ".wp-hud{display:flex;align-items:center;gap:5px;height:100%;box-sizing:border-box;background:var(--lumiverse-bg-elevated,#202126);border:1px solid var(--lumiverse-border,#34363c);border-radius:8px;padding:5px 7px;box-shadow:0 4px 16px #0006}.wp-hud-label{font-weight:700;font-size:12px;margin-right:2px}.wp-hud .wp-button{font-size:11px;padding:4px 6px}",
-  "@media (max-width:430px){.wp-root{padding:8px}.wp-header{display:block}.wp-header .wp-button{margin-top:8px}.wp-grid{grid-template-columns:1fr}}"
+  "@media (max-height:760px){.wp-picker{height:calc(100vh - 170px);min-height:0}}@media (max-width:430px){.wp-root{padding:8px}.wp-header{display:block}.wp-header .wp-button{margin-top:8px}.wp-grid{grid-template-columns:1fr}}"
 ].join(`
 `);
 
@@ -401,6 +413,8 @@ function setup(ctx) {
   let sequence = 0;
   let hud;
   let extrasActions = [];
+  let pickerModal;
+  let pickerOpen = false;
   const pending = new Map;
   let componentHandles = [];
   const disposers = [];
@@ -508,6 +522,148 @@ function setup(ctx) {
       setNotice(transition);
     await load();
   }
+  function openPickerSafely(kind) {
+    openGreetingPicker(kind).catch((error) => {
+      setNotice(error instanceof Error ? error.message : String(error), true);
+      render();
+      syncActionControls();
+    });
+  }
+  async function openGreetingPicker(kind) {
+    if (pickerOpen || busy || !view)
+      return;
+    const currentView = view;
+    const options = greetingPickerOptions(kind, currentView);
+    if (!options.length) {
+      setNotice(kind === "current" ? "There are no greetings available for this chat." : "There is no later greeting available for this chat.", true);
+      render();
+      return;
+    }
+    const preferred = kind === "current" ? currentView.active : currentView.upcoming;
+    let selected = options.find((greeting) => preferred && selectionValue(greeting) === selectionValue(preferred)) ?? options[0];
+    const openedChatId = currentChatId();
+    if (!openedChatId) {
+      setNotice("Open a chat before choosing a greeting.", true);
+      render();
+      return;
+    }
+    let modal;
+    try {
+      modal = ctx.ui.showModal({
+        title: kind === "current" ? "Choose Current Greeting" : "Choose Next Greeting",
+        width: 1040,
+        maxHeight: 1000,
+        persistent: false
+      });
+    } catch (error2) {
+      throw new Error("Could not open the greeting picker: " + (error2 instanceof Error ? error2.message : String(error2)));
+    }
+    pickerModal = modal;
+    pickerOpen = true;
+    const picker = element("div", "wp-picker");
+    const main = element("div", "wp-picker-main");
+    const groupLabel = currentView.isGroupChat ? "Group chat: " + String(currentView.characters.length) + " characters" : "Character: " + (currentView.characters[0]?.name || "(unnamed)");
+    main.append(element("div", "wp-picker-meta", groupLabel));
+    const field = element("div", "wp-picker-field");
+    const selectLabel = element("label", "wp-picker-label", kind === "current" ? "Current greeting" : "Next greeting");
+    const select = element("select", "wp-picker-select");
+    select.id = "wp-picker-select-" + kind;
+    selectLabel.htmlFor = select.id;
+    for (const greeting of options) {
+      const option = element("option", "", greetingLabel(greeting));
+      option.value = selectionValue(greeting);
+      option.selected = selectionValue(greeting) === selectionValue(selected);
+      select.append(option);
+    }
+    field.append(selectLabel, select);
+    main.append(field);
+    const selectedLabel = element("div", "wp-picker-meta");
+    const hint = element("div", "wp-picker-meta", kind === "current" ? "The selected greeting becomes current. The next greeting is recalculated only when needed." : "The current greeting remains unchanged.");
+    const preview = element("div", "wp-picker-preview");
+    const previewText = element("pre", "", "");
+    preview.append(previewText);
+    const error = element("div", "wp-picker-error");
+    error.hidden = true;
+    main.append(selectedLabel, hint, preview, error);
+    const footer = element("div", "wp-picker-footer");
+    const cancel = element("button", "wp-button", "Cancel");
+    cancel.type = "button";
+    const confirm = element("button", "wp-button primary", kind === "current" ? "Use current greeting" : "Use next greeting");
+    confirm.type = "button";
+    footer.append(cancel, confirm);
+    picker.append(main, footer);
+    modal.root.replaceChildren(picker);
+    const updateSelection = (greeting) => {
+      selected = greeting;
+      selectedLabel.textContent = "Selected: " + greetingLabel(greeting);
+      previewText.textContent = greeting.text || "(empty)";
+    };
+    updateSelection(selected);
+    select.onchange = () => {
+      const next = options.find((greeting) => selectionValue(greeting) === select.value);
+      if (next)
+        updateSelection(next);
+    };
+    return new Promise((resolve) => {
+      let settled = false;
+      let committing = false;
+      let unsubscribeDismiss;
+      const finish = (dismiss = true) => {
+        if (settled)
+          return;
+        settled = true;
+        unsubscribeDismiss?.();
+        if (pickerModal === modal)
+          pickerModal = undefined;
+        pickerOpen = false;
+        if (dismiss)
+          modal.dismiss();
+        resolve();
+      };
+      const showError = (message) => {
+        error.hidden = false;
+        error.textContent = message;
+        confirm.disabled = false;
+        cancel.disabled = false;
+        select.disabled = false;
+      };
+      const commit = async () => {
+        const chosen = selected;
+        if (!chosen || committing || busy)
+          return;
+        committing = true;
+        busy = true;
+        confirm.disabled = true;
+        cancel.disabled = true;
+        select.disabled = true;
+        syncActionControls();
+        try {
+          if (currentChatId() !== openedChatId)
+            throw new Error("The active chat changed; choose the greeting again.");
+          await rpc(kind === "current" ? "set-active" : "set-upcoming", {
+            chatId: openedChatId,
+            selection: { characterId: chosen.characterId, greetingIndex: chosen.greetingIndex }
+          });
+          await load();
+          setNotice(kind === "current" ? "Current greeting updated." : "Next greeting updated.");
+          render();
+          finish();
+        } catch (errorValue) {
+          showError(errorValue instanceof Error ? errorValue.message : String(errorValue));
+        } finally {
+          busy = false;
+          committing = false;
+          syncActionControls();
+          syncHud();
+        }
+      };
+      unsubscribeDismiss = modal.onDismiss(() => finish(false));
+      cancel.onclick = () => finish();
+      confirm.onclick = () => {
+        commit();
+      };
+    });
+  }
   async function openActionBarMenu() {
     if (!actionBarButton || busy || !view)
       return;
@@ -524,6 +680,8 @@ function setup(ctx) {
             active: character?.enabled,
             disabled: !character
           },
+          { key: "choose-current", label: "Choose current greeting", disabled: greetingPickerOptions("current", view).length === 0 },
+          { key: "choose-next", label: "Choose next greeting", disabled: greetingPickerOptions("next", view).length === 0 },
           { key: "force", label: "Force next greeting", disabled: !view.upcoming || busy },
           { key: "undo", label: "Undo last insertion", disabled: !view.canUndo || busy },
           { key: "divider", label: "", type: "divider" },
@@ -537,6 +695,10 @@ function setup(ctx) {
     }
     if (result.selectedKey === "toggle")
       safely(toggleSelectedCharacter);
+    else if (result.selectedKey === "choose-current")
+      openPickerSafely("current");
+    else if (result.selectedKey === "choose-next")
+      openPickerSafely("next");
     else if (result.selectedKey === "force")
       safely(forceTransition);
     else if (result.selectedKey === "undo")
@@ -559,14 +721,18 @@ function setup(ctx) {
     const extrasVisible = settings?.extrasActions === true;
     for (const action of extrasActions)
       action.setEnabled(extrasVisible);
-    if (extrasActions.length < 3)
+    if (extrasActions.length < 5)
       return;
     extrasActions[0].setLabel(character ? character.enabled ? "Disable Waypoints" : "Enable Waypoints" : "Toggle Waypoints");
     extrasActions[0].setSubtitle(character?.name ?? "Choose an active or upcoming greeting");
-    extrasActions[1].setLabel("Undo last Waypoints insertion");
-    extrasActions[1].setSubtitle(view?.canUndo ? "Remove the latest Waypoints greeting" : "No Waypoints insertion available");
-    extrasActions[2].setLabel("Force next Waypoints greeting");
-    extrasActions[2].setSubtitle(view?.upcoming ? "Insert the selected upcoming greeting" : "Choose an upcoming greeting first");
+    extrasActions[1].setLabel("Choose current greeting");
+    extrasActions[1].setSubtitle("Select the greeting Waypoints treats as current");
+    extrasActions[2].setLabel("Choose next greeting");
+    extrasActions[2].setSubtitle("Select the upcoming greeting Waypoints will use");
+    extrasActions[3].setLabel("Undo last Waypoints insertion");
+    extrasActions[3].setSubtitle(view?.canUndo ? "Remove the latest Waypoints greeting" : "No Waypoints insertion available");
+    extrasActions[4].setLabel("Force next Waypoints greeting");
+    extrasActions[4].setSubtitle(view?.upcoming ? "Insert the selected upcoming greeting" : "Choose an upcoming greeting first");
   }
   function registerExtrasActions() {
     const registered = [];
@@ -575,6 +741,20 @@ function setup(ctx) {
         id: "toggle-waypoints",
         label: "Toggle Waypoints",
         subtitle: "Enable or disable the selected character",
+        iconSvg: WAYPOINTS_COMPASS_ICON,
+        enabled: false
+      }));
+      registered.push(ctx.ui.registerInputBarAction({
+        id: "choose-current-waypoints",
+        label: "Choose current greeting",
+        subtitle: "Select the greeting Waypoints treats as current",
+        iconSvg: WAYPOINTS_COMPASS_ICON,
+        enabled: false
+      }));
+      registered.push(ctx.ui.registerInputBarAction({
+        id: "choose-next-waypoints",
+        label: "Choose next greeting",
+        subtitle: "Select the upcoming greeting Waypoints will use",
         iconSvg: WAYPOINTS_COMPASS_ICON,
         enabled: false
       }));
@@ -595,9 +775,9 @@ function setup(ctx) {
       extrasActions = registered;
       disposers.push(registered[0].onClick(() => {
         safely(toggleSelectedCharacter);
-      }), registered[1].onClick(() => {
+      }), registered[1].onClick(() => openPickerSafely("current")), registered[2].onClick(() => openPickerSafely("next")), registered[3].onClick(() => {
         safely(undoTransition);
-      }), registered[2].onClick(() => {
+      }), registered[4].onClick(() => {
         safely(forceTransition);
       }));
     } catch (error) {
@@ -1100,6 +1280,7 @@ function setup(ctx) {
       request.reject(new Error("Waypoints closed."));
     }
     pending.clear();
+    pickerModal?.dismiss();
     hud?.destroy();
     for (const action of extrasActions)
       action.destroy();

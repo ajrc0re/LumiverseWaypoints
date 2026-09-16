@@ -4,10 +4,12 @@ import {
   canShowHud,
   cloneSettingsDraft,
   draftValidation,
+  greetingPickerOptions,
   nextDrawerPage,
   resetSettingsDraft,
   shouldRefreshDrawer,
 } from "../src/frontend-model";
+import type { Greeting, WaypointsView } from "../src/types";
 
 describe("drawer model", () => {
   test("switches between Waypoints and Settings tabs", () => {
@@ -36,5 +38,19 @@ describe("drawer model", () => {
     expect(canShowHud(true, ["ui_panels"])).toBe(true);
     expect(canShowHud(false, ["ui_panels"])).toBe(false);
     expect(canShowHud(true, ["characters"])).toBe(false);
+  });
+
+  test("keeps greeting picker options aligned with solo and group rules", () => {
+    const greetings: Greeting[] = [
+      { characterId: "a", characterName: "Ada", greetingIndex: 0, text: "Ada 1" },
+      { characterId: "a", characterName: "Ada", greetingIndex: 1, text: "Ada 2" },
+      { characterId: "b", characterName: "Bryn", greetingIndex: 0, text: "Bryn 1" },
+    ];
+    const solo = { isGroupChat: false, active: greetings[0], greetings } as WaypointsView;
+    expect(greetingPickerOptions("current", solo)).toEqual(greetings);
+    expect(greetingPickerOptions("next", solo)).toEqual([greetings[1]]);
+
+    const group = { isGroupChat: true, active: greetings[0], greetings } as WaypointsView;
+    expect(greetingPickerOptions("next", group)).toEqual([greetings[1], greetings[2]]);
   });
 });

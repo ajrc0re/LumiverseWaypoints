@@ -2,9 +2,17 @@ import type {
   SpindleFloatWidgetHandle,
   SpindleFrontendContext,
   SpindleInputBarActionHandle,
+  SpindleModalHandle,
 } from "lumiverse-spindle-types";
 import { DEFAULT_SETTINGS } from "./config";
-import { canShowHud, cloneSettingsDraft, draftValidation, shouldRefreshDrawer } from "./frontend-model";
+import {
+  canShowHud,
+  cloneSettingsDraft,
+  draftValidation,
+  greetingPickerOptions,
+  shouldRefreshDrawer,
+  type GreetingPickerKind,
+} from "./frontend-model";
 import { handoffTag, overrideTag } from "./prompt";
 import { waypointStyles } from "./styles";
 import type { Greeting, GreetingSelection, WaypointSettings, WaypointsView } from "./types";
@@ -105,6 +113,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let sequence = 0;
   let hud: SpindleFloatWidgetHandle | undefined;
   let extrasActions: SpindleInputBarActionHandle[] = [];
+  let pickerModal: SpindleModalHandle | undefined;
+  let pickerOpen = false;
   const pending = new Map<string, {
     resolve: (value: unknown) => void;
     reject: (reason: Error) => void;
@@ -228,6 +238,161 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     await load();
   }
 
+  function openPickerSafely(kind: GreetingPickerKind): void {
+    void openGreetingPicker(kind).catch((error) => {
+      setNotice(error instanceof Error ? error.message : String(error), true);
+      render();
+      syncActionControls();
+    });
+  }
+
+  async function openGreetingPicker(kind: GreetingPickerKind): Promise<void> {
+    if (pickerOpen || busy || !view) return;
+    const currentView = view;
+    const options = greetingPickerOptions(kind, currentView);
+    if (!options.length) {
+      setNotice(
+        kind === "current" ? "There are no greetings available for this chat." : "There is no later greeting available for this chat.",
+        true,
+      );
+      render();
+      return;
+    }
+
+    const preferred = kind === "current" ? currentView.active : currentView.upcoming;
+    let selected = options.find((greeting) => preferred && selectionValue(greeting) === selectionValue(preferred)) ?? options[0];
+    const openedChatId = currentChatId();
+    if (!openedChatId) {
+      setNotice("Open a chat before choosing a greeting.", true);
+      render();
+      return;
+    }
+
+    let modal: SpindleModalHandle;
+    try {
+      modal = ctx.ui.showModal({
+        title: kind === "current" ? "Choose Current Greeting" : "Choose Next Greeting",
+        width: 1040,
+        maxHeight: 1000,
+        persistent: false,
+      });
+    } catch (error) {
+      throw new Error("Could not open the greeting picker: " + (error instanceof Error ? error.message : String(error)));
+    }
+
+    pickerModal = modal;
+    pickerOpen = true;
+
+    const picker = element("div", "wp-picker");
+    const main = element("div", "wp-picker-main");
+    const groupLabel = currentView.isGroupChat
+      ? "Group chat: " + String(currentView.characters.length) + " characters"
+      : "Character: " + (currentView.characters[0]?.name || "(unnamed)");
+    main.append(element("div", "wp-picker-meta", groupLabel));
+
+    const field = element("div", "wp-picker-field");
+    const selectLabel = element("label", "wp-picker-label", kind === "current" ? "Current greeting" : "Next greeting");
+    const select = element("select", "wp-picker-select");
+    select.id = "wp-picker-select-" + kind;
+    selectLabel.htmlFor = select.id;
+    for (const greeting of options) {
+      const option = element("option", "", greetingLabel(greeting));
+      option.value = selectionValue(greeting);
+      option.selected = selectionValue(greeting) === selectionValue(selected);
+      select.append(option);
+    }
+    field.append(selectLabel, select);
+    main.append(field);
+
+    const selectedLabel = element("div", "wp-picker-meta");
+    const hint = element("div", "wp-picker-meta", kind === "current"
+      ? "The selected greeting becomes current. The next greeting is recalculated only when needed."
+      : "The current greeting remains unchanged.");
+    const preview = element("div", "wp-picker-preview");
+    const previewText = element("pre", "", "");
+    preview.append(previewText);
+    const error = element("div", "wp-picker-error");
+    error.hidden = true;
+    main.append(selectedLabel, hint, preview, error);
+
+    const footer = element("div", "wp-picker-footer");
+    const cancel = element("button", "wp-button", "Cancel");
+    cancel.type = "button";
+    const confirm = element("button", "wp-button primary", kind === "current" ? "Use current greeting" : "Use next greeting");
+    confirm.type = "button";
+    footer.append(cancel, confirm);
+    picker.append(main, footer);
+    modal.root.replaceChildren(picker);
+
+    const updateSelection = (greeting: Greeting): void => {
+      selected = greeting;
+      selectedLabel.textContent = "Selected: " + greetingLabel(greeting);
+      previewText.textContent = greeting.text || "(empty)";
+    };
+    updateSelection(selected);
+    select.onchange = () => {
+      const next = options.find((greeting) => selectionValue(greeting) === select.value);
+      if (next) updateSelection(next);
+    };
+
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      let committing = false;
+      let unsubscribeDismiss: (() => void) | undefined;
+
+      const finish = (dismiss = true): void => {
+        if (settled) return;
+        settled = true;
+        unsubscribeDismiss?.();
+        if (pickerModal === modal) pickerModal = undefined;
+        pickerOpen = false;
+        if (dismiss) modal.dismiss();
+        resolve();
+      };
+
+      const showError = (message: string): void => {
+        error.hidden = false;
+        error.textContent = message;
+        confirm.disabled = false;
+        cancel.disabled = false;
+        select.disabled = false;
+      };
+
+      const commit = async (): Promise<void> => {
+        const chosen = selected;
+        if (!chosen || committing || busy) return;
+        committing = true;
+        busy = true;
+        confirm.disabled = true;
+        cancel.disabled = true;
+        select.disabled = true;
+        syncActionControls();
+        try {
+          if (currentChatId() !== openedChatId) throw new Error("The active chat changed; choose the greeting again.");
+          await rpc(kind === "current" ? "set-active" : "set-upcoming", {
+            chatId: openedChatId,
+            selection: { characterId: chosen.characterId, greetingIndex: chosen.greetingIndex },
+          });
+          await load();
+          setNotice(kind === "current" ? "Current greeting updated." : "Next greeting updated.");
+          render();
+          finish();
+        } catch (errorValue) {
+          showError(errorValue instanceof Error ? errorValue.message : String(errorValue));
+        } finally {
+          busy = false;
+          committing = false;
+          syncActionControls();
+          syncHud();
+        }
+      };
+
+      unsubscribeDismiss = modal.onDismiss(() => finish(false));
+      cancel.onclick = () => finish();
+      confirm.onclick = () => { void commit(); };
+    });
+  }
+
   async function openActionBarMenu(): Promise<void> {
     if (!actionBarButton || busy || !view) return;
     const character = selectedControlCharacter();
@@ -245,6 +410,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
             active: character?.enabled,
             disabled: !character,
           },
+          { key: "choose-current", label: "Choose current greeting", disabled: greetingPickerOptions("current", view).length === 0 },
+          { key: "choose-next", label: "Choose next greeting", disabled: greetingPickerOptions("next", view).length === 0 },
           { key: "force", label: "Force next greeting", disabled: !view.upcoming || busy },
           { key: "undo", label: "Undo last insertion", disabled: !view.canUndo || busy },
           { key: "divider", label: "", type: "divider" },
@@ -257,6 +424,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       return;
     }
     if (result.selectedKey === "toggle") void safely(toggleSelectedCharacter);
+    else if (result.selectedKey === "choose-current") openPickerSafely("current");
+    else if (result.selectedKey === "choose-next") openPickerSafely("next");
     else if (result.selectedKey === "force") void safely(forceTransition);
     else if (result.selectedKey === "undo") void safely(undoTransition);
     else if (result.selectedKey === "open") tab.activate();
@@ -277,15 +446,19 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
     const extrasVisible = settings?.extrasActions === true;
     for (const action of extrasActions) action.setEnabled(extrasVisible);
-    if (extrasActions.length < 3) return;
+    if (extrasActions.length < 5) return;
     extrasActions[0].setLabel(character
       ? (character.enabled ? "Disable Waypoints" : "Enable Waypoints")
       : "Toggle Waypoints");
     extrasActions[0].setSubtitle(character?.name ?? "Choose an active or upcoming greeting");
-    extrasActions[1].setLabel("Undo last Waypoints insertion");
-    extrasActions[1].setSubtitle(view?.canUndo ? "Remove the latest Waypoints greeting" : "No Waypoints insertion available");
-    extrasActions[2].setLabel("Force next Waypoints greeting");
-    extrasActions[2].setSubtitle(view?.upcoming ? "Insert the selected upcoming greeting" : "Choose an upcoming greeting first");
+    extrasActions[1].setLabel("Choose current greeting");
+    extrasActions[1].setSubtitle("Select the greeting Waypoints treats as current");
+    extrasActions[2].setLabel("Choose next greeting");
+    extrasActions[2].setSubtitle("Select the upcoming greeting Waypoints will use");
+    extrasActions[3].setLabel("Undo last Waypoints insertion");
+    extrasActions[3].setSubtitle(view?.canUndo ? "Remove the latest Waypoints greeting" : "No Waypoints insertion available");
+    extrasActions[4].setLabel("Force next Waypoints greeting");
+    extrasActions[4].setSubtitle(view?.upcoming ? "Insert the selected upcoming greeting" : "Choose an upcoming greeting first");
   }
 
   function registerExtrasActions(): void {
@@ -295,6 +468,20 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         id: "toggle-waypoints",
         label: "Toggle Waypoints",
         subtitle: "Enable or disable the selected character",
+        iconSvg: WAYPOINTS_COMPASS_ICON,
+        enabled: false,
+      }));
+      registered.push(ctx.ui.registerInputBarAction({
+        id: "choose-current-waypoints",
+        label: "Choose current greeting",
+        subtitle: "Select the greeting Waypoints treats as current",
+        iconSvg: WAYPOINTS_COMPASS_ICON,
+        enabled: false,
+      }));
+      registered.push(ctx.ui.registerInputBarAction({
+        id: "choose-next-waypoints",
+        label: "Choose next greeting",
+        subtitle: "Select the upcoming greeting Waypoints will use",
         iconSvg: WAYPOINTS_COMPASS_ICON,
         enabled: false,
       }));
@@ -315,8 +502,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       extrasActions = registered;
       disposers.push(
         registered[0].onClick(() => { void safely(toggleSelectedCharacter); }),
-        registered[1].onClick(() => { void safely(undoTransition); }),
-        registered[2].onClick(() => { void safely(forceTransition); }),
+        registered[1].onClick(() => openPickerSafely("current")),
+        registered[2].onClick(() => openPickerSafely("next")),
+        registered[3].onClick(() => { void safely(undoTransition); }),
+        registered[4].onClick(() => { void safely(forceTransition); }),
       );
     } catch (error) {
       for (const action of registered) action.destroy();
@@ -868,6 +1057,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       request.reject(new Error("Waypoints closed."));
     }
     pending.clear();
+    pickerModal?.dismiss();
     hud?.destroy();
     for (const action of extrasActions) action.destroy();
     actionBarMount?.replaceChildren();

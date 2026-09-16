@@ -92,8 +92,10 @@ The optional floating ON / Undo / Force control is enabled by default. Lumiverse
 
 The **Interface** section also controls two input-bar surfaces, both enabled by default:
 
-- **Compass button** mounts a compact Waypoints compass beside Lumiverse's native action-bar buttons above the input. Its themed menu contains Toggle, Force, Undo, and Open Waypoints drawer.
-- **Extras actions** adds Toggle, Undo, and Force entries to Lumiverse's native **Extras** popover under the Waypoints extension heading.
+- **Compass button** mounts a compact Waypoints compass beside Lumiverse's native action-bar buttons above the input. Its themed menu contains Toggle, Choose current greeting, Choose next greeting, Force, Undo, and Open Waypoints drawer.
+- **Extras actions** adds Toggle, Choose current greeting, Choose next greeting, Undo, and Force entries to Lumiverse's native **Extras** popover under the Waypoints extension heading.
+
+The two greeting-choice actions open a full-size picker modeled on Greeting Inspector: choose from the available greetings, inspect a large scrollable preview, then confirm with **Use current greeting** or **Use next greeting**. In solo chats, next-greeting choices stay later in the active character's greeting sequence. In group chats, next-greeting choices include every member's greeting except the current one.
 
 These surfaces are independent of the floating widget. They do not require another permission; the actions still report missing `characters`, `chats`, or `chat_mutation` grants when an operation needs them. The host owns the Quick Replies, Tools, and Extras categories, so Waypoints cannot add native entries directly to Quick Replies or Tools or create another host category.
 

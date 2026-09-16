@@ -1,7 +1,8 @@
 import { DEFAULT_SETTINGS, validateSettings } from "./config";
-import type { WaypointSettings } from "./types";
+import type { Greeting, WaypointSettings, WaypointsView } from "./types";
 
 export type DrawerPage = "waypoints" | "settings";
+export type GreetingPickerKind = "current" | "next";
 
 export function nextDrawerPage(current: DrawerPage, direction: "previous" | "next"): DrawerPage {
   if (direction === "next") return current === "waypoints" ? "settings" : "waypoints";
@@ -28,6 +29,20 @@ export function draftValidation(settings: WaypointSettings): { valid: boolean; m
 
 export function canShowHud(floatingControls: boolean, grantedPermissions: readonly string[]): boolean {
   return floatingControls && grantedPermissions.includes("ui_panels");
+}
+
+export function greetingPickerOptions(kind: GreetingPickerKind, view: WaypointsView): Greeting[] {
+  if (kind === "current") return view.greetings;
+  const active = view.active;
+  if (!active) return view.greetings;
+  if (view.isGroupChat) {
+    return view.greetings.filter((greeting) =>
+      greeting.characterId !== active.characterId || greeting.greetingIndex !== active.greetingIndex,
+    );
+  }
+  return view.greetings.filter((greeting) =>
+    greeting.characterId === active.characterId && greeting.greetingIndex > active.greetingIndex,
+  );
 }
 
 export function shouldRefreshDrawer(eventName: string): boolean {
