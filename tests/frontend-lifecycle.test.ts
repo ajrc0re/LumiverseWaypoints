@@ -186,6 +186,22 @@ class FrontendHost {
 }
 
 describe("frontend character switching", () => {
+  test("Undo refreshes both greeting pickers to the restored selections", async () => {
+    host = new FrontendHost();
+    const progressed = status("chat-a");
+    progressed.active = progressed.greetings[1];
+    progressed.upcoming = progressed.greetings[2];
+    host.reply(host.request("refresh"), progressed);
+    await flush();
+    const pickerValues = () => [...host!.drawer.querySelectorAll("select")].map((node) => JSON.parse(node.value).greetingIndex);
+    expect(pickerValues()).toEqual([1, 2]);
+    host.button("Undo").click();
+    host.reply(host.request("undo"), { transition: { advanced: true, reason: "Restored the previous greetings." }, view: status("chat-a") });
+    await host.finishRefreshes();
+    expect(pickerValues()).toEqual([0, 1]);
+    expect(host.button("Force").disabled).toBe(false);
+  });
+
   test("switches the drawer and routes drawer, HUD, Extras, and compass actions to the new chat", async () => {
     host = new FrontendHost();
     await host.finishRefreshes();

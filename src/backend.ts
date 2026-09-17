@@ -4,7 +4,8 @@ import type {
   SpindleAPI,
 } from "lumiverse-spindle-types";
 import { DEFAULT_SETTINGS } from "./config";
-import { hashText, WaypointEngine } from "./engine";
+import { WaypointEngine } from "./engine";
+import { handoffSignal } from "./handoff-events";
 import { registerWaypointsLoomMacros } from "./loom-macros";
 import type { GreetingSelection, WaypointSettings } from "./types";
 
@@ -39,46 +40,6 @@ function safeRecord(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length ? value : undefined;
-}
-
-function chatIdFrom(payload: unknown): string | undefined {
-  const data = safeRecord(payload);
-  return stringValue(data.chatId) || stringValue(safeRecord(data.chat).id);
-}
-
-function messageFrom(payload: unknown): Record<string, unknown> {
-  return safeRecord(safeRecord(payload).message);
-}
-
-function contentFrom(payload: unknown): string {
-  const data = safeRecord(payload);
-  const message = messageFrom(payload);
-  return typeof data.content === "string"
-    ? data.content
-    : typeof message.content === "string"
-      ? message.content
-      : "";
-}
-
-function sourceIdFrom(payload: unknown): string | undefined {
-  const data = safeRecord(payload);
-  const message = messageFrom(payload);
-  return stringValue(data.generationId) || stringValue(data.messageId) || stringValue(message.id);
-}
-
-function messageIdFrom(payload: unknown): string | undefined {
-  const data = safeRecord(payload);
-  const message = messageFrom(payload);
-  return stringValue(data.messageId) || stringValue(message.id);
-}
-
-function eventKey(kind: string, payload: unknown, chatId: string): string {
-  const data = safeRecord(payload);
-  const generationId = stringValue(data.generationId);
-  if (generationId) return chatId + ":generation:" + generationId;
-  const sourceId = sourceIdFrom(payload);
-  if (sourceId) return chatId + ":message:" + sourceId + ":" + hashText(contentFrom(payload));
-  return chatId + ":" + kind + ":" + hashText(contentFrom(payload));
 }
 
 function notifyChanged(userId: string | undefined, reason: string): void {
@@ -211,19 +172,9 @@ async function handleRequest(raw: unknown, userId?: string): Promise<void> {
 }
 
 function observeHandoff(kind: string, payload: unknown, userId?: string): void {
-  const chatId = chatIdFrom(payload);
-  if (!chatId) return;
-  const message = messageFrom(payload);
-  const extra = Object.keys(safeRecord(message.extra)).length
-    ? safeRecord(message.extra)
-    : safeRecord(safeRecord(payload).extra);
-  void engine(userId).handleHandoff({
-    chatId,
-    eventKey: eventKey(kind, payload, chatId),
-    sourceMessageId: messageIdFrom(payload),
-    content: contentFrom(payload),
-    extra,
-  }).then((result) => {
+  const signal = handoffSignal(kind, payload);
+  if (!signal) return;
+  void engine(userId).handleHandoff(signal).then((result) => {
     if (result.advanced) notifyChanged(userId, "handoff");
   }).catch((error) => {
     spindle.log.warn("[Waypoints] handoff observer failed: " + (error instanceof Error ? error.message : String(error)));
@@ -246,12 +197,9 @@ spindle.permissions.onDenied((detail) => {
   notifyChanged(undefined, "permission-denied");
 });
 
-spindle.on("GENERATION_ENDED", (payload, userId) => observeHandoff("generation-ended", payload, userId));
-spindle.on("GENERATION_STOPPED", (payload, userId) => observeHandoff("generation-stopped", payload, userId));
-spindle.on("MESSAGE_EDITED", (payload, userId) => observeHandoff("message-edited", payload, userId));
-spindle.on("MESSAGE_SWIPED", (payload, userId) => observeHandoff("message-swiped", payload, userId));
-spindle.on("SWIPE_EDITED", (payload, userId) => observeHandoff("swipe-edited", payload, userId));
-spindle.on("CHARACTER_MESSAGE_RENDERED", (payload, userId) => observeHandoff("character-message-rendered", payload, userId));
+for (const eventName of ["GENERATION_ENDED", "GENERATION_STOPPED", "MESSAGE_EDITED", "MESSAGE_SWIPED", "SWIPE_EDITED"]) {
+  spindle.on(eventName, (payload, userId) => observeHandoff(eventName, payload, userId));
+}
 
 for (const eventName of [
   "CHAT_SWITCHED",

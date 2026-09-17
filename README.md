@@ -36,7 +36,7 @@ Open the **Waypoints** drawer tab.
 - In a group chat, every member has its own per-chat ON/OFF override. New members default to ON, and the greeting pickers can select any member's greeting.
 - Turn on **Auto-prompt** when you want the rendered scene direction added to every generation. It is off by default, so you can inspect the prompt first.
 - Use **Force** to insert the currently selected upcoming greeting immediately.
-- Use **Undo** only to remove the latest message that Waypoints itself inserted.
+- Use **Undo** to remove the latest message that Waypoints itself inserted and restore its previous current and next greeting selections. The original handoff stays consumed; use **Force** if you intentionally want to insert that greeting again.
 
 By default the model should emit:
 
@@ -103,6 +103,8 @@ These surfaces are independent of the floating widget. They do not require anoth
 
 Before appending a greeting, Waypoints stores a persistent per-chat journal. The inserted assistant message is stamped with journal and selection metadata. On duplicate lifecycle events or a worker restart, Waypoints checks for that stamped message before it inserts again. This avoids double advancement while retaining recovery after an append succeeds just before the worker is interrupted.
 
+Handoffs are tied to a specific saved assistant reply and swipe, using the content after tag removal. Generation and edit notifications for that same reply share a duplicate check. Switching chats, rendering history, and navigating existing swipes never trigger an insertion. A stopped generation without a message ID can inspect only the current reply, so an old handoff elsewhere in the chat cannot trigger the next greeting.
+
 Undo is intentionally narrow: it only deletes the most recent assistant message carrying Waypoints' own insertion metadata. It never decides from matching text, proximity, or a user message, so it will not remove an unrelated user-authored message.
 
 ## Known boundaries
@@ -121,4 +123,4 @@ bun test
 bun run build
 ```
 
-The test suite covers pure configuration/prompt/tag/selection behavior, transition journaling and recovery, metadata-only undo, and frontend draft/HUD state rules.
+The test suite covers configuration/prompt/tag/selection behavior, transition journaling and recovery, duplicate lifecycle notifications, Undo selection restoration, and frontend navigation, picker, and control behavior.

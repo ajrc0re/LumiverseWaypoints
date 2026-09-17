@@ -76,6 +76,7 @@ export interface PendingHandoff {
 export interface TransitionJournal {
   id: string;
   eventKey: string;
+  handoffKey?: string;
   sourceMessageId?: string;
   target: GreetingSelection;
   previousActive: GreetingSelection | null;
@@ -100,6 +101,7 @@ export interface InsertedGreetingMetadata {
   version: 1;
   journalId: string;
   eventKey: string;
+  handoffKey?: string;
   target: GreetingSelection;
   previousActive: GreetingSelection | null;
   previousUpcoming: GreetingSelection | null;

@@ -33,6 +33,7 @@ function journalFrom(value: unknown): TransitionJournal | null {
   return {
     id: value.id,
     eventKey: value.eventKey,
+    handoffKey: typeof value.handoffKey === "string" ? value.handoffKey : undefined,
     sourceMessageId: typeof value.sourceMessageId === "string" ? value.sourceMessageId : undefined,
     target,
     previousActive: selectionFrom(value.previousActive),
@@ -221,10 +222,6 @@ export function addRecentTransition(
     ...state.recentTransitionKeys.filter((entry) => entry !== eventKey),
     eventKey,
   ].slice(-limit);
-}
-
-export function removeRecentTransition(state: WaypointChatState, eventKey: string): void {
-  state.recentTransitionKeys = state.recentTransitionKeys.filter((entry) => entry !== eventKey);
 }
 
 export function rememberPendingHandoff(

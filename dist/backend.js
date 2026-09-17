@@ -348,6 +348,7 @@ function journalFrom(value) {
   return {
     id: value.id,
     eventKey: value.eventKey,
+    handoffKey: typeof value.handoffKey === "string" ? value.handoffKey : undefined,
     sourceMessageId: typeof value.sourceMessageId === "string" ? value.sourceMessageId : undefined,
     target,
     previousActive: selectionFrom(value.previousActive),
@@ -497,9 +498,6 @@ function addRecentTransition(state, eventKey, limit) {
     eventKey
   ].slice(-limit);
 }
-function removeRecentTransition(state, eventKey) {
-  state.recentTransitionKeys = state.recentTransitionKeys.filter((entry) => entry !== eventKey);
-}
 function rememberPendingHandoff(state, pending, limit) {
   state.pendingHandoffs = [
     ...state.pendingHandoffs.filter((entry) => entry.eventKey !== pending.eventKey),
@@ -563,6 +561,7 @@ function asInsertedMetadata(value) {
     version: 1,
     journalId: value.journalId,
     eventKey: value.eventKey,
+    handoffKey: typeof value.handoffKey === "string" ? value.handoffKey : undefined,
     target: { characterId: value.target.characterId, greetingIndex: Number(value.target.greetingIndex) },
     previousActive: selection(value.previousActive),
     previousUpcoming: selection(value.previousUpcoming),
@@ -742,7 +741,7 @@ class WaypointEngine {
       const message = messages[index];
       const metadata = messageMetadata(message);
       if (metadata && message.role === "assistant")
-        return { id: message.id, metadata };
+        return { id: message.id, metadata, previousMessageId: messages[index - 1]?.id };
     }
     return null;
   }
@@ -769,6 +768,10 @@ class WaypointEngine {
     state.upcoming = nextGreetingForSelection(context.greetings, state.active);
     addRecentTransition(state, journal.eventKey, settings.recentTransitionLimit);
     consumePendingHandoff(state, journal.eventKey);
+    if (journal.handoffKey) {
+      addRecentTransition(state, journal.handoffKey, settings.recentTransitionLimit);
+      consumePendingHandoff(state, journal.handoffKey);
+    }
     state.journal = null;
     await this.persistState(chatId, state);
     this.note("transition committed: " + journal.eventKey + " -> " + insertedMessageId);
@@ -793,6 +796,7 @@ class WaypointEngine {
       version: 1,
       journalId: journal.id,
       eventKey: journal.eventKey,
+      handoffKey: journal.handoffKey,
       target: selected(journal.target),
       previousActive: selected(journal.previousActive),
       previousUpcoming: selected(journal.previousUpcoming),
@@ -802,7 +806,7 @@ class WaypointEngine {
     };
     return { [INSERTED_GREETING_METADATA_KEY]: metadata };
   }
-  async transitionLocked(chatId, state, context, settings, target, eventKey, sourceMessageId) {
+  async transitionLocked(chatId, state, context, settings, target, eventKey, sourceMessageId, handoffKey) {
     if (state.recentTransitionKeys.includes(eventKey)) {
       return { advanced: false, reason: "This handoff was already processed." };
     }
@@ -816,6 +820,7 @@ class WaypointEngine {
       id: journalId(),
       eventKey,
       sourceMessageId,
+      handoffKey,
       target: selected(target),
       previousActive: selected(state.active),
       previousUpcoming: selected(state.upcoming),
@@ -850,25 +855,42 @@ class WaypointEngine {
       return { advanced: false, reason: "Greeting insertion failed: " + reason };
     }
   }
-  async handoffMessage(chatId, settings, sourceMessageId) {
-    for (let attempt = 0;attempt < settings.handoffReadRetryAttempts; attempt += 1) {
+  async handoffMessage(chatId, settings, signal, attempts = settings.handoffReadRetryAttempts) {
+    const direct = stripHandoffTags(signal.content ?? "", settings.handoffTagName);
+    for (let attempt = 0;attempt < attempts; attempt += 1) {
       const messages = await this.api.chat.getMessages(chatId);
-      const candidates = sourceMessageId ? messages.filter((message) => message.id === sourceMessageId) : [...messages].reverse();
-      for (const message of candidates) {
-        const extra = messageExtraHandoff(message);
-        if (extra && extra.tagName === settings.handoffTagName) {
-          return { id: message.id, tagCount: extra.tagCount };
-        }
-        const direct = stripHandoffTags(message.content, settings.handoffTagName);
-        if (direct.hasHandoff)
-          return { id: message.id, tagCount: direct.tagCount };
+      const message = signal.sourceMessageId ? messages.find((entry) => entry.id === signal.sourceMessageId) : [...messages].reverse().find((entry) => !messageMetadata(entry));
+      if (message) {
+        if (message.role !== "assistant" || messageMetadata(message))
+          return null;
+        const stored = stripHandoffTags(message.content, settings.handoffTagName);
+        if (signal.content && direct.content !== stored.content)
+          return null;
+        const contentHash = hashText(stored.content);
+        const extra = messageExtraHandoff(message) ?? asHandoffExtra(signal.extra?.[HANDOFF_EXTRA_KEY]);
+        const stamped = extra?.tagName === settings.handoffTagName && extra.contentHash === contentHash;
+        if (!direct.hasHandoff && !stored.hasHandoff && !stamped)
+          return null;
+        const eventKey = chatId + ":handoff:" + message.id + ":" + String(message.swipe_id) + ":" + contentHash;
+        return {
+          id: message.id,
+          eventKey,
+          contentHash,
+          tagCount: direct.tagCount || stored.tagCount || (stamped ? extra.tagCount : 0),
+          alreadyInserted: messages.some((entry) => {
+            const metadata = messageMetadata(entry);
+            return metadata?.eventKey === eventKey || metadata?.handoffKey === eventKey || Boolean(metadata?.sourceMessageId === message.id && !metadata.handoffKey && !metadata.eventKey.includes(":handoff:"));
+          })
+        };
       }
-      if (attempt + 1 < settings.handoffReadRetryAttempts)
+      if (attempt + 1 < attempts)
         await sleep(settings.handoffReadRetryDelayMs);
     }
     return null;
   }
   async processContent(ctx) {
+    if (ctx.isUser)
+      return;
     const settings = await this.settings();
     const handoff = stripHandoffTags(ctx.content, settings.handoffTagName);
     if (!handoff.hasHandoff)
@@ -905,27 +927,26 @@ class WaypointEngine {
       if (state.recentTransitionKeys.includes(signal.eventKey)) {
         return { advanced: false, reason: "This handoff was already processed." };
       }
-      const direct = stripHandoffTags(signal.content ?? "", settings.handoffTagName);
-      const extra = asHandoffExtra(signal.extra?.[HANDOFF_EXTRA_KEY]);
-      const observed = direct.hasHandoff || extra?.tagName === settings.handoffTagName;
-      const stored = observed ? null : await this.handoffMessage(signal.chatId, settings, signal.sourceMessageId);
-      const tagCount = direct.tagCount || extra?.tagCount || stored?.tagCount || 0;
-      if (!observed && !stored)
-        return { advanced: false, reason: "No configured handoff tag was found." };
+      const handoff = await this.handoffMessage(signal.chatId, settings, signal);
+      if (!handoff)
+        return { advanced: false, reason: "No handoff was found in the current assistant reply." };
+      if (handoff.alreadyInserted || state.recentTransitionKeys.includes(handoff.eventKey)) {
+        return { advanced: false, reason: "This handoff was already processed." };
+      }
       rememberPendingHandoff(state, {
-        eventKey: signal.eventKey,
-        sourceMessageId: signal.sourceMessageId ?? stored?.id,
-        contentHash: hashText(signal.content ?? ""),
-        tagCount,
+        eventKey: handoff.eventKey,
+        sourceMessageId: handoff.id,
+        contentHash: handoff.contentHash,
+        tagCount: handoff.tagCount,
         at: Date.now()
       }, settings.pendingHandoffLimit);
       await this.persistState(signal.chatId, state);
       if (!state.upcoming) {
-        consumePendingHandoff(state, signal.eventKey);
+        consumePendingHandoff(state, handoff.eventKey);
         await this.persistState(signal.chatId, state);
         return { advanced: false, reason: "There is no upcoming greeting to insert." };
       }
-      return this.transitionLocked(signal.chatId, state, context, settings, state.upcoming, signal.eventKey, signal.sourceMessageId ?? stored?.id);
+      return this.transitionLocked(signal.chatId, state, context, settings, state.upcoming, handoff.eventKey, handoff.id);
     });
   }
   async force(chatId) {
@@ -940,7 +961,8 @@ class WaypointEngine {
       await this.reconcileJournalLocked(resolvedChatId, state, context, settings);
       if (!state.upcoming)
         return { advanced: false, reason: "There is no upcoming greeting to insert." };
-      return this.transitionLocked(resolvedChatId, state, context, settings, state.upcoming, "force:" + journalId());
+      const handoff = await this.handoffMessage(resolvedChatId, settings, { chatId: resolvedChatId, eventKey: "" }, 1);
+      return this.transitionLocked(resolvedChatId, state, context, settings, state.upcoming, "force:" + journalId(), handoff?.id, handoff?.eventKey);
     });
   }
   async undo(chatId) {
@@ -955,15 +977,29 @@ class WaypointEngine {
       const inserted = await this.latestInsertedGreeting(resolvedChatId);
       if (!inserted)
         return { advanced: false, reason: "There is no Waypoints-stamped greeting to undo." };
+      let handoffKey = inserted.metadata.handoffKey;
+      const sourceMessageId = inserted.metadata.sourceMessageId ?? inserted.previousMessageId;
+      if (!handoffKey && sourceMessageId) {
+        handoffKey = (await this.handoffMessage(resolvedChatId, settings, {
+          chatId: resolvedChatId,
+          eventKey: inserted.metadata.eventKey,
+          sourceMessageId
+        }, 1))?.eventKey;
+      }
       await this.api.chat.deleteMessage(resolvedChatId, inserted.id);
       state.active = selected(inserted.metadata.previousActive);
       state.upcoming = selected(inserted.metadata.previousUpcoming);
-      removeRecentTransition(state, inserted.metadata.eventKey);
+      addRecentTransition(state, inserted.metadata.eventKey, settings.recentTransitionLimit);
+      consumePendingHandoff(state, inserted.metadata.eventKey);
+      if (handoffKey) {
+        addRecentTransition(state, handoffKey, settings.recentTransitionLimit);
+        consumePendingHandoff(state, handoffKey);
+      }
       state.journal = null;
       const reconciled = reconcileChatState(state, context);
       await this.persistState(resolvedChatId, reconciled);
       this.note("undid Waypoints message " + inserted.id);
-      return { advanced: true, reason: "Removed the last Waypoints-inserted greeting.", insertedMessageId: inserted.id };
+      return { advanced: true, reason: "Removed the last Waypoints-inserted greeting and restored the previous current and next greetings.", insertedMessageId: inserted.id };
     });
   }
   validateSelection(context, selection) {
@@ -1147,20 +1183,51 @@ class WaypointEngine {
   }
 }
 
+// src/handoff-events.ts
+function record(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+function text(value) {
+  return typeof value === "string" && value.length ? value : undefined;
+}
+function handoffSignal(event, payload) {
+  const data = record(payload);
+  const message = record(data.message);
+  const terminal = event === "GENERATION_ENDED" || event === "GENERATION_STOPPED";
+  if (!terminal && event !== "MESSAGE_EDITED" && event !== "MESSAGE_SWIPED" && event !== "SWIPE_EDITED")
+    return null;
+  if (terminal && (data.error || data.impersonateDraft || data.generationType === "impersonate"))
+    return null;
+  if (message.is_user === true || message.role === "user" || message.role === "system")
+    return null;
+  if (event === "MESSAGE_SWIPED" && (data.action === "navigated" || data.action === "deleted"))
+    return null;
+  if (event === "MESSAGE_SWIPED" && typeof data.swipeId === "number" && data.swipeId !== message.swipe_id)
+    return null;
+  const chatId = text(data.chatId) ?? text(record(data.chat).id);
+  const sourceMessageId = text(data.messageId) ?? text(message.id);
+  const content = typeof data.content === "string" ? data.content : typeof message.content === "string" ? message.content : "";
+  if (!chatId || !sourceMessageId && !content)
+    return null;
+  const generationId = text(data.generationId);
+  const eventKey = generationId ? chatId + ":generation:" + generationId : chatId + ":message:" + sourceMessageId + ":" + hashText(content);
+  return { chatId, eventKey, sourceMessageId, content, extra: record(message.extra ?? data.extra) };
+}
+
 // src/loom-macros.ts
 var WAYPOINTS_ACTIVE_MACRO = "waypoints_active";
 var WAYPOINTS_CONTENT_MACRO = "waypoints_content";
-function record(value) {
+function record2(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 function macroIdentity(context) {
-  const value = record(context);
-  const env = record(value.env);
-  const chat = record(env.chat);
-  const extra = record(env.extra);
+  const value = record2(context);
+  const env = record2(value.env);
+  const chat = record2(env.chat);
+  const extra = record2(env.extra);
   return {
     chatId: nonEmptyString(value.chatId) ?? nonEmptyString(chat.id),
     userId: nonEmptyString(value.userId) ?? nonEmptyString(extra.userId)
@@ -1212,38 +1279,6 @@ function safeRecord(value) {
 }
 function stringValue(value) {
   return typeof value === "string" && value.length ? value : undefined;
-}
-function chatIdFrom(payload) {
-  const data = safeRecord(payload);
-  return stringValue(data.chatId) || stringValue(safeRecord(data.chat).id);
-}
-function messageFrom(payload) {
-  return safeRecord(safeRecord(payload).message);
-}
-function contentFrom(payload) {
-  const data = safeRecord(payload);
-  const message = messageFrom(payload);
-  return typeof data.content === "string" ? data.content : typeof message.content === "string" ? message.content : "";
-}
-function sourceIdFrom(payload) {
-  const data = safeRecord(payload);
-  const message = messageFrom(payload);
-  return stringValue(data.generationId) || stringValue(data.messageId) || stringValue(message.id);
-}
-function messageIdFrom(payload) {
-  const data = safeRecord(payload);
-  const message = messageFrom(payload);
-  return stringValue(data.messageId) || stringValue(message.id);
-}
-function eventKey(kind, payload, chatId) {
-  const data = safeRecord(payload);
-  const generationId = stringValue(data.generationId);
-  if (generationId)
-    return chatId + ":generation:" + generationId;
-  const sourceId = sourceIdFrom(payload);
-  if (sourceId)
-    return chatId + ":message:" + sourceId + ":" + hashText(contentFrom(payload));
-  return chatId + ":" + kind + ":" + hashText(contentFrom(payload));
 }
 function notifyChanged(userId, reason) {
   spindle.sendToFrontend({ type: "waypoints:changed", reason }, userId);
@@ -1363,18 +1398,10 @@ async function handleRequest(raw, userId) {
   }
 }
 function observeHandoff(kind, payload, userId) {
-  const chatId = chatIdFrom(payload);
-  if (!chatId)
+  const signal = handoffSignal(kind, payload);
+  if (!signal)
     return;
-  const message = messageFrom(payload);
-  const extra = Object.keys(safeRecord(message.extra)).length ? safeRecord(message.extra) : safeRecord(safeRecord(payload).extra);
-  engine(userId).handleHandoff({
-    chatId,
-    eventKey: eventKey(kind, payload, chatId),
-    sourceMessageId: messageIdFrom(payload),
-    content: contentFrom(payload),
-    extra
-  }).then((result) => {
+  engine(userId).handleHandoff(signal).then((result) => {
     if (result.advanced)
       notifyChanged(userId, "handoff");
   }).catch((error) => {
@@ -1394,12 +1421,9 @@ spindle.permissions.onDenied((detail) => {
   spindle.log.warn("[Waypoints] " + detail.operation + " requires " + detail.permission);
   notifyChanged(undefined, "permission-denied");
 });
-spindle.on("GENERATION_ENDED", (payload, userId) => observeHandoff("generation-ended", payload, userId));
-spindle.on("GENERATION_STOPPED", (payload, userId) => observeHandoff("generation-stopped", payload, userId));
-spindle.on("MESSAGE_EDITED", (payload, userId) => observeHandoff("message-edited", payload, userId));
-spindle.on("MESSAGE_SWIPED", (payload, userId) => observeHandoff("message-swiped", payload, userId));
-spindle.on("SWIPE_EDITED", (payload, userId) => observeHandoff("swipe-edited", payload, userId));
-spindle.on("CHARACTER_MESSAGE_RENDERED", (payload, userId) => observeHandoff("character-message-rendered", payload, userId));
+for (const eventName of ["GENERATION_ENDED", "GENERATION_STOPPED", "MESSAGE_EDITED", "MESSAGE_SWIPED", "SWIPE_EDITED"]) {
+  spindle.on(eventName, (payload, userId) => observeHandoff(eventName, payload, userId));
+}
 for (const eventName of [
   "CHAT_SWITCHED",
   "CHAT_CHANGED",

@@ -5,6 +5,7 @@ import type {
 } from "lumiverse-spindle-types";
 import { DEFAULT_SETTINGS } from "../src/config";
 import { WaypointEngine } from "../src/engine";
+import { handoffSignal } from "../src/handoff-events";
 import { parseChatState } from "../src/state";
 import {
   HANDOFF_EXTRA_KEY,
@@ -17,6 +18,7 @@ interface FakeMessage {
   content: string;
   extra?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
+  swipeId?: number;
 }
 
 class FakeLumiverse {
@@ -45,6 +47,7 @@ class FakeLumiverse {
   settings: unknown = {};
   failAppend = false;
   writeThenThrow = false;
+  onDelete?: () => void;
   private messageNumber = 0;
   readonly api: SpindleAPI;
 
@@ -102,7 +105,7 @@ class FakeLumiverse {
             name: "",
             content: message.content,
             send_date: 0,
-            swipe_id: 0,
+            swipe_id: message.swipeId ?? 0,
             swipes: [message.content],
             role: message.role,
             extra: message.extra ?? {},
@@ -124,6 +127,7 @@ class FakeLumiverse {
           const index = owner.messages.findIndex((message) => message.id === messageId);
           if (index < 0) throw new Error("missing message");
           owner.messages.splice(index, 1);
+          owner.onDelete?.();
         },
       },
     } as unknown as SpindleAPI;
@@ -131,6 +135,13 @@ class FakeLumiverse {
 
   state(): ReturnType<typeof parseChatState> {
     return parseChatState(this.variables.get("chat:lumiverse_waypoints.state.v1"));
+  }
+
+  async assistantHandoff(engine: WaypointEngine, id: string, raw = "Continue.\n<inject-prewritten-content />"): Promise<FakeMessage> {
+    const patch = await engine.processContent({ chatId: "chat", content: raw, isUser: false, origin: "create", userId: "user" });
+    const message: FakeMessage = { id, role: "assistant", content: patch?.content ?? raw, extra: patch?.extra };
+    this.messages.push(message);
+    return message;
   }
 }
 
@@ -214,6 +225,7 @@ describe("WaypointEngine transitions", () => {
   test("advances a stopped-generation handoff once and suppresses duplicate events", async () => {
     const host = new FakeLumiverse();
     const engine = new WaypointEngine(host.api);
+    await host.assistantHandoff(engine, "stopped-reply", "Partial response\n<inject-prewritten-content />");
     const first = await engine.handleHandoff({
       chatId: "chat",
       eventKey: "chat:generation:stopped-1",
@@ -226,17 +238,19 @@ describe("WaypointEngine transitions", () => {
     });
     expect(first.advanced).toBe(true);
     expect(duplicate.advanced).toBe(false);
-    expect(host.messages).toHaveLength(1);
+    expect(host.messages.filter((message) => message.metadata?.[INSERTED_GREETING_METADATA_KEY])).toHaveLength(1);
   });
 
   test("handles edited and swiped handoffs with independent event keys", async () => {
     const host = new FakeLumiverse();
     const engine = new WaypointEngine(host.api);
+    await host.assistantHandoff(engine, "edited-1", "edited <inject-prewritten-content />");
     const edited = await engine.handleHandoff({
       chatId: "chat",
       eventKey: "chat:message:edited-1",
       content: "edited <inject-prewritten-content />",
     });
+    await host.assistantHandoff(engine, "swiped-2", "swiped <inject-prewritten-content />");
     const swiped = await engine.handleHandoff({
       chatId: "chat",
       eventKey: "chat:message:swiped-2",
@@ -244,7 +258,7 @@ describe("WaypointEngine transitions", () => {
     });
     expect(edited.advanced).toBe(true);
     expect(swiped.advanced).toBe(true);
-    expect(host.messages.map((message) => message.content)).toEqual(["Greeting 2", "Greeting 3"]);
+    expect(host.messages.filter((message) => message.metadata).map((message) => message.content)).toEqual(["Greeting 2", "Greeting 3"]);
   });
 
   test("rolls back state when insertion fails without touching existing messages", async () => {
@@ -318,5 +332,145 @@ describe("WaypointEngine transitions", () => {
     const undone = await engine.undo("chat");
     expect(undone.advanced).toBe(true);
     expect(host.messages.map((message) => message.id)).toEqual(["user-copy", "later-user"]);
+    expect(host.state().active).toEqual({ characterId: "a", greetingIndex: 0 });
+    expect(host.state().upcoming).toEqual({ characterId: "a", greetingIndex: 1 });
+  });
+
+  test.each(["generation-first", "edit-first"])("deduplicates raw and stripped notifications for a reply (%s)", async (order) => {
+    const host = new FakeLumiverse(4);
+    const engine = new WaypointEngine(host.api);
+    const raw = "Continue.\n<inject-prewritten-content />";
+    const message = await host.assistantHandoff(engine, "reply", raw);
+    const generation = handoffSignal("GENERATION_ENDED", { chatId: "chat", generationId: "gen", messageId: message.id, content: raw })!;
+    const edited = handoffSignal("MESSAGE_EDITED", { chatId: "chat", message })!;
+    const signals = order === "generation-first" ? [generation, edited] : [edited, generation];
+    expect((await engine.handleHandoff(signals[0])).advanced).toBe(true);
+    expect((await engine.handleHandoff(signals[1])).advanced).toBe(false);
+    // Returning to a chat, refreshing its view, or restarting must not append again.
+    const restarted = new WaypointEngine(host.api);
+    for (const event of ["CHAT_SWITCHED", "CHARACTER_MESSAGE_RENDERED", "CHAT_CHANGED"]) {
+      expect(handoffSignal(event, { chatId: "chat", message })).toBeNull();
+      await restarted.view("chat");
+    }
+    expect((await restarted.handleHandoff(edited)).advanced).toBe(false);
+    expect(host.messages.filter((entry) => entry.metadata)).toHaveLength(1);
+    expect(host.state().active?.greetingIndex).toBe(1);
+    expect(host.state().upcoming?.greetingIndex).toBe(2);
+  });
+
+  test("undo restores the exact pair and delayed notifications cannot advance it again", async () => {
+    const host = new FakeLumiverse(6);
+    const engine = new WaypointEngine(host.api);
+    await engine.setActive("chat", { characterId: "a", greetingIndex: 1 });
+    await engine.setUpcoming("chat", { characterId: "a", greetingIndex: 4 });
+    const message = await host.assistantHandoff(engine, "source");
+    const signal = handoffSignal("MESSAGE_EDITED", { chatId: "chat", message })!;
+    await engine.handleHandoff(signal);
+    expect(host.state().active?.greetingIndex).toBe(4);
+    expect(host.state().upcoming?.greetingIndex).toBe(5);
+    const delayed: Array<Promise<unknown>> = [];
+    host.onDelete = () => { delayed.push(engine.handleHandoff({ ...signal, eventKey: "late-other-event" })); };
+    const undone = await engine.undo("chat");
+    await Promise.all(delayed);
+    expect(undone.advanced).toBe(true);
+    expect(host.messages.map((entry) => entry.id)).toEqual(["source"]);
+    expect(host.state().active?.greetingIndex).toBe(1);
+    expect(host.state().upcoming?.greetingIndex).toBe(4);
+    const restarted = new WaypointEngine(host.api);
+    expect((await restarted.handleHandoff(signal)).advanced).toBe(false);
+    const view = await restarted.view("chat");
+    expect(view.active?.greetingIndex).toBe(1);
+    expect(view.upcoming?.greetingIndex).toBe(4);
+    // Explicit Force remains available after Undo.
+    expect((await restarted.force("chat")).advanced).toBe(true);
+    expect(host.messages.at(-1)?.content).toBe("Greeting 5");
+  });
+
+  test("undo restores a group path across different characters", async () => {
+    const host = new FakeLumiverse();
+    host.characters.set("b", { id: "b", name: "Bryn", first_mes: "Bryn 1", alternate_greetings: ["Bryn 2"], extensions: {} });
+    host.chatRecord.metadata = { character_ids: ["a", "b"] };
+    const engine = new WaypointEngine(host.api);
+    await engine.setActive("chat", { characterId: "a", greetingIndex: 2 });
+    await engine.setUpcoming("chat", { characterId: "b", greetingIndex: 0 });
+    await engine.force("chat");
+    await engine.undo("chat");
+    const view = await engine.view("chat");
+    expect(view.active).toMatchObject({ characterId: "a", greetingIndex: 2 });
+    expect(view.upcoming).toMatchObject({ characterId: "b", greetingIndex: 0 });
+  });
+
+  test.each([false, true])("undoing Force does not re-arm its source tag (legacy metadata: %s)", async (legacy) => {
+    const host = new FakeLumiverse(4);
+    const engine = new WaypointEngine(host.api);
+    const source = await host.assistantHandoff(engine, "source");
+    await engine.force("chat");
+    const metadata = host.messages.at(-1)!.metadata![INSERTED_GREETING_METADATA_KEY] as Record<string, unknown>;
+    if (legacy) {
+      delete metadata.handoffKey;
+      delete metadata.sourceMessageId;
+      const state = host.state();
+      state.recentTransitionKeys = [metadata.eventKey as string];
+      host.variables.set("chat:lumiverse_waypoints.state.v1", JSON.stringify(state));
+    } else {
+      const late = handoffSignal("GENERATION_ENDED", { chatId: "chat", generationId: "late", messageId: source.id, content: source.content })!;
+      expect((await engine.handleHandoff(late)).advanced).toBe(false);
+    }
+    await engine.undo("chat");
+    const replay = handoffSignal("MESSAGE_EDITED", { chatId: "chat", message: source })!;
+    expect((await new WaypointEngine(host.api).handleHandoff(replay)).advanced).toBe(false);
+    expect(host.messages.map((entry) => entry.id)).toEqual(["source"]);
+    expect(host.state().active?.greetingIndex).toBe(0);
+    expect(host.state().upcoming?.greetingIndex).toBe(1);
+  });
+
+  test("the stamped insertion still prevents replay after its recent key has expired", async () => {
+    const host = new FakeLumiverse();
+    const engine = new WaypointEngine(host.api);
+    const message = await host.assistantHandoff(engine, "source");
+    const signal = handoffSignal("MESSAGE_EDITED", { chatId: "chat", message })!;
+    await engine.handleHandoff(signal);
+    const state = host.state();
+    state.recentTransitionKeys = [];
+    host.variables.set("chat:lumiverse_waypoints.state.v1", JSON.stringify(state));
+    expect((await new WaypointEngine(host.api).handleHandoff(signal)).advanced).toBe(false);
+    expect(host.messages.filter((entry) => entry.metadata)).toHaveLength(1);
+  });
+
+  test("a terminal event cannot find an old tag behind a newer untagged reply", async () => {
+    const host = new FakeLumiverse();
+    const engine = new WaypointEngine(host.api);
+    await host.assistantHandoff(engine, "old-source");
+    host.messages.push({ id: "new-source", role: "assistant", content: "No handoff here." });
+    const result = await engine.handleHandoff({ chatId: "chat", eventKey: "stopped-new", content: "No handoff here." });
+    expect(result.advanced).toBe(false);
+    expect(host.messages).toHaveLength(2);
+  });
+
+  test("a stale handoff stamp does not trigger after its reply has changed", async () => {
+    const host = new FakeLumiverse();
+    const engine = new WaypointEngine(host.api);
+    const message = await host.assistantHandoff(engine, "source");
+    message.content = "Edited to remove the handoff.";
+    const result = await engine.handleHandoff(handoffSignal("MESSAGE_EDITED", { chatId: "chat", message })!);
+    expect(result.advanced).toBe(false);
+    expect(host.messages).toHaveLength(1);
+  });
+
+  test("each newly generated swipe can hand off once, without processing user or inserted messages", async () => {
+    const host = new FakeLumiverse(5);
+    const engine = new WaypointEngine(host.api);
+    const message = await host.assistantHandoff(engine, "source");
+    const signal = handoffSignal("MESSAGE_EDITED", { chatId: "chat", message })!;
+    expect((await engine.handleHandoff(signal)).advanced).toBe(true);
+    message.swipeId = 1;
+    expect((await engine.handleHandoff(signal)).advanced).toBe(true);
+    expect((await engine.handleHandoff(signal)).advanced).toBe(false);
+    const inserted = host.messages.at(-1)!;
+    inserted.content += " <inject-prewritten-content />";
+    expect((await engine.handleHandoff({ chatId: "chat", sourceMessageId: inserted.id, eventKey: "inserted", content: inserted.content })).advanced).toBe(false);
+    host.messages.push({ id: "user", role: "user", content: "<inject-prewritten-content />" });
+    expect((await engine.handleHandoff({ chatId: "chat", sourceMessageId: "user", eventKey: "user", content: "<inject-prewritten-content />" })).advanced).toBe(false);
+    expect(await engine.processContent({ chatId: "chat", userId: "user", origin: "create", isUser: true, content: "<inject-prewritten-content />" })).toBeUndefined();
   });
 });
