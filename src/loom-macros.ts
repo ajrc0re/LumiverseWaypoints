@@ -4,6 +4,7 @@ import type { WaypointLoomValues } from "./types";
 /** Use these in Loom presets, for example {{if::{{waypoints_active}}}}. */
 export const WAYPOINTS_ACTIVE_MACRO = "waypoints_active";
 export const WAYPOINTS_CONTENT_MACRO = "waypoints_content";
+export const WAYPOINTS_ALT_MESSAGES_MACRO = "altMessages";
 
 export interface WaypointMacroIdentity {
   chatId?: string;
@@ -45,6 +46,7 @@ function register(
   returnType: "boolean" | "string",
   resolver: WaypointMacroResolver,
   select: (values: WaypointLoomValues) => string,
+  fallback?: string,
 ): void {
   const definition = {
     name,
@@ -58,7 +60,7 @@ function register(
       try {
         return select(await resolver(macroIdentity(context)));
       } catch {
-        return returnType === "boolean" ? "false" : "";
+        return fallback ?? (returnType === "boolean" ? "false" : "");
       }
     },
   };
@@ -68,7 +70,10 @@ function register(
   api.registerMacro(definition as unknown as MacroDefinitionDTO);
 }
 
-export function registerWaypointsLoomMacros(api: SpindleAPI, resolver: WaypointMacroResolver): void {
+export function registerWaypointsLoomMacros(
+  api: SpindleAPI,
+  resolver: WaypointMacroResolver,
+): (alternateGreetingCount: number) => void {
   register(
     api,
     WAYPOINTS_ACTIVE_MACRO,
@@ -85,4 +90,36 @@ export function registerWaypointsLoomMacros(api: SpindleAPI, resolver: WaypointM
     resolver,
     (values) => values.active ? values.content : "",
   );
+
+  register(
+    api,
+    WAYPOINTS_ALT_MESSAGES_MACRO,
+    "Returns the active character's alternate greetings as a JSON array. The standard firstMessage greeting is not included.",
+    "string",
+    resolver,
+    (values) => JSON.stringify(values.altMessages),
+    "[]",
+  );
+
+  let registeredAlternateGreetingCount = 0;
+  return (alternateGreetingCount) => {
+    const count = Number.isFinite(alternateGreetingCount)
+      ? Math.max(0, Math.floor(alternateGreetingCount))
+      : 0;
+
+    // The host passes unknown macros through literally, so keep previously
+    // needed indices registered. Their handlers resolve against the current
+    // chat and return an empty string when that character has fewer greetings.
+    for (let index = registeredAlternateGreetingCount + 1; index <= count; index += 1) {
+      register(
+        api,
+        `altMessage${index}`,
+        `Returns alternate greeting ${index} for the active chat's character, or an empty string when it is not present.`,
+        "string",
+        resolver,
+        (values) => values.altMessages[index - 1] ?? "",
+      );
+    }
+    registeredAlternateGreetingCount = Math.max(registeredAlternateGreetingCount, count);
+  };
 }

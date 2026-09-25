@@ -179,11 +179,16 @@ describe("WaypointEngine prompt and processor", () => {
     const ready = await engine.loomValues("chat");
     expect(ready.active).toBe(true);
     expect(ready.content).toContain("Greeting 2");
+    expect(ready.altMessages).toEqual(["Greeting 2", "Greeting 3"]);
     // Macro previews must not create a chat variable or reconcile state.
     expect(host.variables.size).toBe(0);
 
     await engine.setEnabled("chat", "a", false);
-    expect(await engine.loomValues("chat")).toEqual({ active: false, content: "" });
+    expect(await engine.loomValues("chat")).toEqual({
+      active: false,
+      content: "",
+      altMessages: ["Greeting 2", "Greeting 3"],
+    });
   });
 
   test("strips and stamps configured handoff tags in the content processor", async () => {

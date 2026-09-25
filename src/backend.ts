@@ -30,7 +30,19 @@ function engine(userId?: string): WaypointEngine {
   return current;
 }
 
-registerWaypointsLoomMacros(spindle, ({ chatId, userId }) => engine(userId).loomValues(chatId));
+const ensureAlternateGreetingMacros = registerWaypointsLoomMacros(
+  spindle,
+  ({ chatId, userId }) => engine(userId).loomValues(chatId),
+);
+
+async function refreshAlternateGreetingMacros(userId?: string): Promise<void> {
+  try {
+    const count = await engine(userId).activeAlternateGreetingCount();
+    ensureAlternateGreetingMacros(count);
+  } catch (error) {
+    spindle.log.warn("[Waypoints] alternate greeting macro registration failed: " + (error instanceof Error ? error.message : String(error)));
+  }
+}
 
 function safeRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -189,6 +201,7 @@ spindle.permissions.onChanged(() => {
   void refreshConfiguration().catch((error) => {
     spindle.log.warn("[Waypoints] permission refresh failed: " + (error instanceof Error ? error.message : String(error)));
   });
+  void refreshAlternateGreetingMacros();
   notifyChanged(undefined, "permissions");
 });
 
@@ -208,8 +221,15 @@ for (const eventName of [
   "CHARACTER_DELETED",
   "GENERATION_STARTED",
 ]) {
-  spindle.on(eventName, (_payload, userId) => notifyChanged(userId, eventName.toLowerCase()));
+  spindle.on(eventName, (_payload, userId) => {
+    notifyChanged(userId, eventName.toLowerCase());
+    if (["CHAT_SWITCHED", "CHAT_CHANGED", "CHARACTER_EDITED", "CHARACTER_DELETED", "GENERATION_STARTED"].includes(eventName)) {
+      void refreshAlternateGreetingMacros(userId);
+    }
+  });
 }
+
+void refreshAlternateGreetingMacros();
 
 void refreshConfiguration().catch((error) => {
   spindle.log.warn("[Waypoints] initial registration failed: " + (error instanceof Error ? error.message : String(error)));

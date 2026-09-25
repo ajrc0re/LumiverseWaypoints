@@ -684,6 +684,10 @@ class WaypointEngine {
     const characters = loaded.filter((character) => Boolean(character));
     return buildGreetingContext(chat, characters);
   }
+  alternateMessages(context) {
+    const character = context.characters.find((entry) => entry.id === context.primaryCharacterId);
+    return Array.isArray(character?.alternate_greetings) ? character.alternate_greetings.map((message) => typeof message === "string" ? message : "") : [];
+  }
   async state(chatId) {
     try {
       return parseChatState(await this.api.variables.chat.get(chatId, CHAT_STATE_KEY));
@@ -1082,7 +1086,7 @@ class WaypointEngine {
   }
   async loomValues(chatId) {
     if (!chatId || this.missingPermissions(CONTEXT_PERMISSIONS).length) {
-      return { active: false, content: "" };
+      return { active: false, content: "", altMessages: [] };
     }
     try {
       return this.serial(chatId, async () => {
@@ -1090,12 +1094,25 @@ class WaypointEngine {
         const context = await this.context(chatId);
         const state = reconcileChatState(await this.state(chatId), context);
         const active = greetingForSelection(context.greetings, state.active);
+        const altMessages = this.alternateMessages(context);
         const prompt = this.promptStatus(context, state, settings);
         const ready = Boolean(active && this.isSelectionEnabled(context, state, state.active) && prompt.ready && prompt.content);
-        return { active: ready, content: ready ? prompt.content : "" };
+        return { active: ready, content: ready ? prompt.content : "", altMessages };
       });
     } catch {
-      return { active: false, content: "" };
+      return { active: false, content: "", altMessages: [] };
+    }
+  }
+  async activeAlternateGreetingCount() {
+    if (this.missingPermissions(CONTEXT_PERMISSIONS).length)
+      return 0;
+    try {
+      const chatId = await this.getActiveChatId(await this.settings());
+      if (!chatId)
+        return 0;
+      return await this.serial(chatId, async () => this.alternateMessages(await this.context(chatId)).length);
+    } catch {
+      return 0;
     }
   }
   async view(chatId) {
@@ -1217,6 +1234,7 @@ function handoffSignal(event, payload) {
 // src/loom-macros.ts
 var WAYPOINTS_ACTIVE_MACRO = "waypoints_active";
 var WAYPOINTS_CONTENT_MACRO = "waypoints_content";
+var WAYPOINTS_ALT_MESSAGES_MACRO = "altMessages";
 function record2(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -1233,7 +1251,7 @@ function macroIdentity(context) {
     userId: nonEmptyString(value.userId) ?? nonEmptyString(extra.userId)
   };
 }
-function register(api, name, description, returnType, resolver, select) {
+function register(api, name, description, returnType, resolver, select, fallback) {
   const definition = {
     name,
     category: "Waypoints",
@@ -1244,7 +1262,7 @@ function register(api, name, description, returnType, resolver, select) {
       try {
         return select(await resolver(macroIdentity(context)));
       } catch {
-        return returnType === "boolean" ? "false" : "";
+        return fallback ?? (returnType === "boolean" ? "false" : "");
       }
     }
   };
@@ -1253,6 +1271,15 @@ function register(api, name, description, returnType, resolver, select) {
 function registerWaypointsLoomMacros(api, resolver) {
   register(api, WAYPOINTS_ACTIVE_MACRO, "Returns true when the selected Waypoints path is enabled and has a rendered upcoming-scene prompt.", "boolean", resolver, (values) => values.active ? "true" : "false");
   register(api, WAYPOINTS_CONTENT_MACRO, "Returns the current Waypoints rendered upcoming-scene prompt for use in a Loom preset.", "string", resolver, (values) => values.active ? values.content : "");
+  register(api, WAYPOINTS_ALT_MESSAGES_MACRO, "Returns the active character's alternate greetings as a JSON array. The standard firstMessage greeting is not included.", "string", resolver, (values) => JSON.stringify(values.altMessages), "[]");
+  let registeredAlternateGreetingCount = 0;
+  return (alternateGreetingCount) => {
+    const count = Number.isFinite(alternateGreetingCount) ? Math.max(0, Math.floor(alternateGreetingCount)) : 0;
+    for (let index = registeredAlternateGreetingCount + 1;index <= count; index += 1) {
+      register(api, `altMessage${index}`, `Returns alternate greeting ${index} for the active chat's character, or an empty string when it is not present.`, "string", resolver, (values) => values.altMessages[index - 1] ?? "");
+    }
+    registeredAlternateGreetingCount = Math.max(registeredAlternateGreetingCount, count);
+  };
 }
 
 // src/backend.ts
@@ -1273,7 +1300,15 @@ function engine(userId) {
   }
   return current;
 }
-registerWaypointsLoomMacros(spindle, ({ chatId, userId }) => engine(userId).loomValues(chatId));
+var ensureAlternateGreetingMacros = registerWaypointsLoomMacros(spindle, ({ chatId, userId }) => engine(userId).loomValues(chatId));
+async function refreshAlternateGreetingMacros(userId) {
+  try {
+    const count = await engine(userId).activeAlternateGreetingCount();
+    ensureAlternateGreetingMacros(count);
+  } catch (error) {
+    spindle.log.warn("[Waypoints] alternate greeting macro registration failed: " + (error instanceof Error ? error.message : String(error)));
+  }
+}
 function safeRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -1415,6 +1450,7 @@ spindle.permissions.onChanged(() => {
   refreshConfiguration().catch((error) => {
     spindle.log.warn("[Waypoints] permission refresh failed: " + (error instanceof Error ? error.message : String(error)));
   });
+  refreshAlternateGreetingMacros();
   notifyChanged(undefined, "permissions");
 });
 spindle.permissions.onDenied((detail) => {
@@ -1431,8 +1467,14 @@ for (const eventName of [
   "CHARACTER_DELETED",
   "GENERATION_STARTED"
 ]) {
-  spindle.on(eventName, (_payload, userId) => notifyChanged(userId, eventName.toLowerCase()));
+  spindle.on(eventName, (_payload, userId) => {
+    notifyChanged(userId, eventName.toLowerCase());
+    if (["CHAT_SWITCHED", "CHAT_CHANGED", "CHARACTER_EDITED", "CHARACTER_DELETED", "GENERATION_STARTED"].includes(eventName)) {
+      refreshAlternateGreetingMacros(userId);
+    }
+  });
 }
+refreshAlternateGreetingMacros();
 refreshConfiguration().catch((error) => {
   spindle.log.warn("[Waypoints] initial registration failed: " + (error instanceof Error ? error.message : String(error)));
 });

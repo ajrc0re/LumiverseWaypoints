@@ -953,6 +953,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       "wp-preview",
       "{{if::{{waypoints_active}}}}\n{{waypoints_content}}\n{{/if}}",
     ));
+    loomHelp.append(element(
+      "p",
+      "wp-help",
+      "Pre-run council tools can also use {{altMessage1}}, {{altMessage2}}, and so on for this character's alternate greetings. {{altMessages}} returns them as a JSON array; the standard {{firstMessage}} is separate. Missing alternate greeting macros resolve to an empty string after a character switch.",
+    ));
     settings.append(loomHelp);
 
     settings.append(element("div", "wp-divider"));

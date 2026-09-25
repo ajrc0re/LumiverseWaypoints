@@ -132,6 +132,8 @@ export interface PromptStatus {
 export interface WaypointLoomValues {
   active: boolean;
   content: string;
+  /** Alternate greetings for the chat's primary character, in card order. */
+  altMessages: string[];
 }
 
 export interface CharacterView {

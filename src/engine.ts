@@ -234,6 +234,13 @@ export class WaypointEngine {
     return buildGreetingContext(chat, characters);
   }
 
+  private alternateMessages(context: GreetingContext): string[] {
+    const character = context.characters.find((entry) => entry.id === context.primaryCharacterId);
+    return Array.isArray(character?.alternate_greetings)
+      ? character.alternate_greetings.map((message) => typeof message === "string" ? message : "")
+      : [];
+  }
+
   private async state(chatId: string): Promise<WaypointChatState> {
     try {
       return parseChatState(await this.api.variables.chat.get(chatId, CHAT_STATE_KEY));
@@ -722,7 +729,7 @@ export class WaypointEngine {
    */
   async loomValues(chatId?: string): Promise<WaypointLoomValues> {
     if (!chatId || this.missingPermissions(CONTEXT_PERMISSIONS).length) {
-      return { active: false, content: "" };
+      return { active: false, content: "", altMessages: [] };
     }
     try {
       return this.serial(chatId, async () => {
@@ -730,6 +737,7 @@ export class WaypointEngine {
         const context = await this.context(chatId);
         const state = reconcileChatState(await this.state(chatId), context);
         const active = greetingForSelection(context.greetings, state.active);
+        const altMessages = this.alternateMessages(context);
         const prompt = this.promptStatus(context, state, settings);
         const ready = Boolean(
           active
@@ -737,10 +745,22 @@ export class WaypointEngine {
           && prompt.ready
           && prompt.content,
         );
-        return { active: ready, content: ready ? prompt.content : "" };
+        return { active: ready, content: ready ? prompt.content : "", altMessages };
       });
     } catch {
-      return { active: false, content: "" };
+      return { active: false, content: "", altMessages: [] };
+    }
+  }
+
+  /** Number of alternate greeting slots on the currently active character card. */
+  async activeAlternateGreetingCount(): Promise<number> {
+    if (this.missingPermissions(CONTEXT_PERMISSIONS).length) return 0;
+    try {
+      const chatId = await this.getActiveChatId(await this.settings());
+      if (!chatId) return 0;
+      return await this.serial(chatId, async () => this.alternateMessages(await this.context(chatId)).length);
+    } catch {
+      return 0;
     }
   }
 

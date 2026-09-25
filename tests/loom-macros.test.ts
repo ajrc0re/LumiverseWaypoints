@@ -3,6 +3,7 @@ import type { SpindleAPI } from "lumiverse-spindle-types";
 import {
   macroIdentity,
   registerWaypointsLoomMacros,
+  WAYPOINTS_ALT_MESSAGES_MACRO,
   WAYPOINTS_ACTIVE_MACRO,
   WAYPOINTS_CONTENT_MACRO,
 } from "../src/loom-macros";
@@ -25,7 +26,7 @@ describe("Waypoints Loom macros", () => {
     })).toEqual({ chatId: "nested-chat", userId: "nested-user" });
   });
 
-  test("registers volatile active and content macros with safe inactive output", async () => {
+  test("resolves the current character's alternate greetings without carrying old values forward", async () => {
     const registered: RegisteredMacro[] = [];
     const api = {
       registerMacro(definition: unknown) {
@@ -33,19 +34,34 @@ describe("Waypoints Loom macros", () => {
       },
     } as unknown as SpindleAPI;
 
-    registerWaypointsLoomMacros(api, async ({ chatId, userId }) => ({
+    let altMessages = Array.from({ length: 9 }, (_, index) => `Character A greeting ${index + 1}`);
+    const ensureAlternateGreetingMacros = registerWaypointsLoomMacros(api, async ({ chatId, userId }) => ({
       active: chatId === "chat" && userId === "user",
       content: "Rendered scene prompt",
+      altMessages,
     }));
+    ensureAlternateGreetingMacros(altMessages.length);
 
     expect(registered.map((definition) => definition.name)).toEqual([
       WAYPOINTS_ACTIVE_MACRO,
       WAYPOINTS_CONTENT_MACRO,
+      WAYPOINTS_ALT_MESSAGES_MACRO,
+      ...Array.from({ length: 9 }, (_, index) => `altMessage${index + 1}`),
     ]);
     expect(registered.every((definition) => definition.volatile)).toBe(true);
     const context = { chatId: "chat", env: { extra: { userId: "user" } } };
-    expect(await registered[0].handler(context)).toBe("true");
-    expect(await registered[1].handler(context)).toBe("Rendered scene prompt");
-    expect(await registered[1].handler({ chatId: "other" })).toBe("");
+    const macro = (name: string) => registered.find((definition) => definition.name === name)!;
+    expect(await macro(WAYPOINTS_ACTIVE_MACRO).handler(context)).toBe("true");
+    expect(await macro(WAYPOINTS_CONTENT_MACRO).handler(context)).toBe("Rendered scene prompt");
+    expect(await macro(WAYPOINTS_ALT_MESSAGES_MACRO).handler(context)).toBe(JSON.stringify(altMessages));
+    expect(await macro("altMessage9").handler(context)).toBe("Character A greeting 9");
+
+    // Switching to a character with two total greetings leaves one alternate.
+    altMessages = ["Character B greeting 2"];
+    expect(await macro("altMessage1").handler(context)).toBe("Character B greeting 2");
+    expect(await macro("altMessage2").handler(context)).toBe("");
+    expect(await macro("altMessage9").handler(context)).toBe("");
+    expect(await macro(WAYPOINTS_ALT_MESSAGES_MACRO).handler(context)).toBe('["Character B greeting 2"]');
+    expect(await macro(WAYPOINTS_CONTENT_MACRO).handler({ chatId: "other" })).toBe("");
   });
 });
