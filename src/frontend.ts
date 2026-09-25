@@ -956,7 +956,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     loomHelp.append(element(
       "p",
       "wp-help",
-      "Pre-run council tools can also use {{altMessage1}}, {{altMessage2}}, and so on for this character's alternate greetings. {{altMessages}} returns them as a JSON array; the standard {{firstMessage}} is separate. Missing alternate greeting macros resolve to an empty string after a character switch.",
+      "Pre-run council tools can also use {{altMessage1}}, {{altMessage2}}, and so on for this character's alternate greetings. {{altMessages}} returns them as a JSON array; the standard {{firstMessage}} is separate. Higher altMessage indices are unregistered when switching to a character with fewer alternate greetings. {{nextMessages}} returns the choices offered by Waypoints' next-greeting picker (only later greetings in solo chats). {{currentMessage}} and {{nextMessage}} return the selected current and upcoming greetings.",
     ));
     settings.append(loomHelp);
 

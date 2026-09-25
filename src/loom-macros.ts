@@ -5,6 +5,9 @@ import type { WaypointLoomValues } from "./types";
 export const WAYPOINTS_ACTIVE_MACRO = "waypoints_active";
 export const WAYPOINTS_CONTENT_MACRO = "waypoints_content";
 export const WAYPOINTS_ALT_MESSAGES_MACRO = "altMessages";
+export const WAYPOINTS_NEXT_MESSAGES_MACRO = "nextMessages";
+export const WAYPOINTS_CURRENT_MESSAGE_MACRO = "currentMessage";
+export const WAYPOINTS_NEXT_MESSAGE_MACRO = "nextMessage";
 
 export interface WaypointMacroIdentity {
   chatId?: string;
@@ -100,6 +103,31 @@ export function registerWaypointsLoomMacros(
     (values) => JSON.stringify(values.altMessages),
     "[]",
   );
+  register(
+    api,
+    WAYPOINTS_NEXT_MESSAGES_MACRO,
+    "Returns the greetings offered by the Waypoints next-greeting picker as a JSON array. In solo chats, only greetings after the current greeting are included.",
+    "string",
+    resolver,
+    (values) => JSON.stringify(values.nextMessages),
+    "[]",
+  );
+  register(
+    api,
+    WAYPOINTS_CURRENT_MESSAGE_MACRO,
+    "Returns the currently selected Waypoints greeting.",
+    "string",
+    resolver,
+    (values) => values.currentMessage,
+  );
+  register(
+    api,
+    WAYPOINTS_NEXT_MESSAGE_MACRO,
+    "Returns the currently selected upcoming Waypoints greeting.",
+    "string",
+    resolver,
+    (values) => values.nextMessage,
+  );
 
   let registeredAlternateGreetingCount = 0;
   return (alternateGreetingCount) => {
@@ -107,9 +135,6 @@ export function registerWaypointsLoomMacros(
       ? Math.max(0, Math.floor(alternateGreetingCount))
       : 0;
 
-    // The host passes unknown macros through literally, so keep previously
-    // needed indices registered. Their handlers resolve against the current
-    // chat and return an empty string when that character has fewer greetings.
     for (let index = registeredAlternateGreetingCount + 1; index <= count; index += 1) {
       register(
         api,
@@ -120,6 +145,9 @@ export function registerWaypointsLoomMacros(
         (values) => values.altMessages[index - 1] ?? "",
       );
     }
-    registeredAlternateGreetingCount = Math.max(registeredAlternateGreetingCount, count);
+    for (let index = registeredAlternateGreetingCount; index > count; index -= 1) {
+      api.unregisterMacro(`altMessage${index}`);
+    }
+    registeredAlternateGreetingCount = count;
   };
 }

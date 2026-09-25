@@ -134,6 +134,12 @@ export interface WaypointLoomValues {
   content: string;
   /** Alternate greetings for the chat's primary character, in card order. */
   altMessages: string[];
+  /** Greetings offered by Waypoints' next-greeting picker. */
+  nextMessages: string[];
+  /** Currently selected Waypoints greeting. */
+  currentMessage: string;
+  /** Currently selected Waypoints upcoming greeting. */
+  nextMessage: string;
 }
 
 export interface CharacterView {

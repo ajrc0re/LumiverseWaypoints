@@ -14,6 +14,7 @@ import {
   consumePendingHandoff,
   greetingForSelection,
   groupCharacterIds,
+  nextGreetingChoices,
   nextGreetingForSelection,
   parseChatState,
   reconcileChatState,
@@ -729,7 +730,14 @@ export class WaypointEngine {
    */
   async loomValues(chatId?: string): Promise<WaypointLoomValues> {
     if (!chatId || this.missingPermissions(CONTEXT_PERMISSIONS).length) {
-      return { active: false, content: "", altMessages: [] };
+      return {
+        active: false,
+        content: "",
+        altMessages: [],
+        nextMessages: [],
+        currentMessage: "",
+        nextMessage: "",
+      };
     }
     try {
       return this.serial(chatId, async () => {
@@ -737,7 +745,10 @@ export class WaypointEngine {
         const context = await this.context(chatId);
         const state = reconcileChatState(await this.state(chatId), context);
         const active = greetingForSelection(context.greetings, state.active);
+        const upcoming = greetingForSelection(context.greetings, state.upcoming);
         const altMessages = this.alternateMessages(context);
+        const nextMessages = nextGreetingChoices(context.greetings, active, context.isGroupChat)
+          .map((greeting) => greeting.text);
         const prompt = this.promptStatus(context, state, settings);
         const ready = Boolean(
           active
@@ -745,10 +756,24 @@ export class WaypointEngine {
           && prompt.ready
           && prompt.content,
         );
-        return { active: ready, content: ready ? prompt.content : "", altMessages };
+        return {
+          active: ready,
+          content: ready ? prompt.content : "",
+          altMessages,
+          nextMessages,
+          currentMessage: active?.text ?? "",
+          nextMessage: upcoming?.text ?? "",
+        };
       });
     } catch {
-      return { active: false, content: "", altMessages: [] };
+      return {
+        active: false,
+        content: "",
+        altMessages: [],
+        nextMessages: [],
+        currentMessage: "",
+        nextMessage: "",
+      };
     }
   }
 

@@ -183,6 +183,23 @@ export function nextGreetingForSelection(
     : null;
 }
 
+/** Greeting choices shown by the next-greeting picker for this current selection. */
+export function nextGreetingChoices(
+  greetings: readonly Greeting[],
+  active: Greeting | null,
+  isGroupChat: boolean,
+): Greeting[] {
+  if (!active) return [...greetings];
+  if (isGroupChat) {
+    return greetings.filter((greeting) =>
+      greeting.characterId !== active.characterId || greeting.greetingIndex !== active.greetingIndex,
+    );
+  }
+  return greetings.filter((greeting) =>
+    greeting.characterId === active.characterId && greeting.greetingIndex > active.greetingIndex,
+  );
+}
+
 export function defaultSelections(context: GreetingContext): Pick<WaypointChatState, "active" | "upcoming"> {
   const active =
     firstGreetingForCharacter(context.greetings, context.primaryCharacterId) ??

@@ -258,6 +258,16 @@ function validateSettings(input) {
   return { settings, warnings };
 }
 
+// src/state.ts
+function nextGreetingChoices(greetings, active, isGroupChat) {
+  if (!active)
+    return [...greetings];
+  if (isGroupChat) {
+    return greetings.filter((greeting) => greeting.characterId !== active.characterId || greeting.greetingIndex !== active.greetingIndex);
+  }
+  return greetings.filter((greeting) => greeting.characterId === active.characterId && greeting.greetingIndex > active.greetingIndex);
+}
+
 // src/frontend-model.ts
 function approximatePromptTokenCount(characterCount) {
   return Math.max(0, Math.ceil(Math.max(0, characterCount) / 4));
@@ -283,13 +293,7 @@ function canShowHud(floatingControls, grantedPermissions) {
 function greetingPickerOptions(kind, view) {
   if (kind === "current")
     return view.greetings;
-  const active = view.active;
-  if (!active)
-    return view.greetings;
-  if (view.isGroupChat) {
-    return view.greetings.filter((greeting) => greeting.characterId !== active.characterId || greeting.greetingIndex !== active.greetingIndex);
-  }
-  return view.greetings.filter((greeting) => greeting.characterId === active.characterId && greeting.greetingIndex > active.greetingIndex);
+  return nextGreetingChoices(view.greetings, view.active, view.isGroupChat);
 }
 function shouldRefreshDrawer(eventName) {
   return eventName === "CHAT_SWITCHED" || eventName === "CHAT_CHANGED" || eventName === "waypoints:changed";
@@ -1196,7 +1200,7 @@ function setup(ctx) {
     loomHelp.append(element("pre", "wp-preview", `{{if::{{waypoints_active}}}}
 {{waypoints_content}}
 {{/if}}`));
-    loomHelp.append(element("p", "wp-help", "Pre-run council tools can also use {{altMessage1}}, {{altMessage2}}, and so on for this character's alternate greetings. {{altMessages}} returns them as a JSON array; the standard {{firstMessage}} is separate. Missing alternate greeting macros resolve to an empty string after a character switch."));
+    loomHelp.append(element("p", "wp-help", "Pre-run council tools can also use {{altMessage1}}, {{altMessage2}}, and so on for this character's alternate greetings. {{altMessages}} returns them as a JSON array; the standard {{firstMessage}} is separate. Higher altMessage indices are unregistered when switching to a character with fewer alternate greetings. {{nextMessages}} returns the choices offered by Waypoints' next-greeting picker (only later greetings in solo chats). {{currentMessage}} and {{nextMessage}} return the selected current and upcoming greetings."));
     settings.append(loomHelp);
     settings.append(element("div", "wp-divider"));
     settings.append(element("h4", "", "Handoff"));

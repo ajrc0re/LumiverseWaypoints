@@ -469,6 +469,14 @@ function nextGreetingForSelection(greetings, selection) {
   const following = greetings.find((entry) => entry.characterId === selection.characterId && entry.greetingIndex > selection.greetingIndex);
   return following ? { characterId: following.characterId, greetingIndex: following.greetingIndex } : null;
 }
+function nextGreetingChoices(greetings, active, isGroupChat) {
+  if (!active)
+    return [...greetings];
+  if (isGroupChat) {
+    return greetings.filter((greeting) => greeting.characterId !== active.characterId || greeting.greetingIndex !== active.greetingIndex);
+  }
+  return greetings.filter((greeting) => greeting.characterId === active.characterId && greeting.greetingIndex > active.greetingIndex);
+}
 function defaultSelections(context) {
   const active = firstGreetingForCharacter(context.greetings, context.primaryCharacterId) ?? (context.greetings[0] ? { characterId: context.greetings[0].characterId, greetingIndex: context.greetings[0].greetingIndex } : null);
   return { active, upcoming: nextGreetingForSelection(context.greetings, active) };
@@ -1086,7 +1094,14 @@ class WaypointEngine {
   }
   async loomValues(chatId) {
     if (!chatId || this.missingPermissions(CONTEXT_PERMISSIONS).length) {
-      return { active: false, content: "", altMessages: [] };
+      return {
+        active: false,
+        content: "",
+        altMessages: [],
+        nextMessages: [],
+        currentMessage: "",
+        nextMessage: ""
+      };
     }
     try {
       return this.serial(chatId, async () => {
@@ -1094,13 +1109,29 @@ class WaypointEngine {
         const context = await this.context(chatId);
         const state = reconcileChatState(await this.state(chatId), context);
         const active = greetingForSelection(context.greetings, state.active);
+        const upcoming = greetingForSelection(context.greetings, state.upcoming);
         const altMessages = this.alternateMessages(context);
+        const nextMessages = nextGreetingChoices(context.greetings, active, context.isGroupChat).map((greeting) => greeting.text);
         const prompt = this.promptStatus(context, state, settings);
         const ready = Boolean(active && this.isSelectionEnabled(context, state, state.active) && prompt.ready && prompt.content);
-        return { active: ready, content: ready ? prompt.content : "", altMessages };
+        return {
+          active: ready,
+          content: ready ? prompt.content : "",
+          altMessages,
+          nextMessages,
+          currentMessage: active?.text ?? "",
+          nextMessage: upcoming?.text ?? ""
+        };
       });
     } catch {
-      return { active: false, content: "", altMessages: [] };
+      return {
+        active: false,
+        content: "",
+        altMessages: [],
+        nextMessages: [],
+        currentMessage: "",
+        nextMessage: ""
+      };
     }
   }
   async activeAlternateGreetingCount() {
@@ -1235,6 +1266,9 @@ function handoffSignal(event, payload) {
 var WAYPOINTS_ACTIVE_MACRO = "waypoints_active";
 var WAYPOINTS_CONTENT_MACRO = "waypoints_content";
 var WAYPOINTS_ALT_MESSAGES_MACRO = "altMessages";
+var WAYPOINTS_NEXT_MESSAGES_MACRO = "nextMessages";
+var WAYPOINTS_CURRENT_MESSAGE_MACRO = "currentMessage";
+var WAYPOINTS_NEXT_MESSAGE_MACRO = "nextMessage";
 function record2(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -1272,13 +1306,19 @@ function registerWaypointsLoomMacros(api, resolver) {
   register(api, WAYPOINTS_ACTIVE_MACRO, "Returns true when the selected Waypoints path is enabled and has a rendered upcoming-scene prompt.", "boolean", resolver, (values) => values.active ? "true" : "false");
   register(api, WAYPOINTS_CONTENT_MACRO, "Returns the current Waypoints rendered upcoming-scene prompt for use in a Loom preset.", "string", resolver, (values) => values.active ? values.content : "");
   register(api, WAYPOINTS_ALT_MESSAGES_MACRO, "Returns the active character's alternate greetings as a JSON array. The standard firstMessage greeting is not included.", "string", resolver, (values) => JSON.stringify(values.altMessages), "[]");
+  register(api, WAYPOINTS_NEXT_MESSAGES_MACRO, "Returns the greetings offered by the Waypoints next-greeting picker as a JSON array. In solo chats, only greetings after the current greeting are included.", "string", resolver, (values) => JSON.stringify(values.nextMessages), "[]");
+  register(api, WAYPOINTS_CURRENT_MESSAGE_MACRO, "Returns the currently selected Waypoints greeting.", "string", resolver, (values) => values.currentMessage);
+  register(api, WAYPOINTS_NEXT_MESSAGE_MACRO, "Returns the currently selected upcoming Waypoints greeting.", "string", resolver, (values) => values.nextMessage);
   let registeredAlternateGreetingCount = 0;
   return (alternateGreetingCount) => {
     const count = Number.isFinite(alternateGreetingCount) ? Math.max(0, Math.floor(alternateGreetingCount)) : 0;
     for (let index = registeredAlternateGreetingCount + 1;index <= count; index += 1) {
       register(api, `altMessage${index}`, `Returns alternate greeting ${index} for the active chat's character, or an empty string when it is not present.`, "string", resolver, (values) => values.altMessages[index - 1] ?? "");
     }
-    registeredAlternateGreetingCount = Math.max(registeredAlternateGreetingCount, count);
+    for (let index = registeredAlternateGreetingCount;index > count; index -= 1) {
+      api.unregisterMacro(`altMessage${index}`);
+    }
+    registeredAlternateGreetingCount = count;
   };
 }
 

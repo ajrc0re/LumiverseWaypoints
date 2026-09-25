@@ -84,7 +84,9 @@ If you prefer Loom to place the guidance, leave **Auto-prompt** off and put this
 
 `{{waypoints_active}}` returns `true` only when the selected Waypoints path is enabled and has a renderable upcoming scene. `{{waypoints_content}}` returns that same rendered scene prompt. These are Waypoints extension macros, not local variables, so use them without a leading `.`. The Loom block controls placement and role; Waypoints' automatic-insertion role and depth apply only when **Auto-prompt** is on. Do not enable both paths unless you intentionally want the guidance twice.
 
-Pre-run council tools can also use `{{altMessage1}}`, `{{altMessage2}}`, and higher indices for the active character's alternate greetings. `{{altMessages}}` returns those alternate greetings as a JSON array; the character's standard `{{firstMessage}}` is not included. An indexed macro with no matching greeting resolves to an empty string, including after switching from a character with more greetings.
+Pre-run council tools can also use `{{altMessage1}}`, `{{altMessage2}}`, and higher indices for the active character's alternate greetings. `{{altMessages}}` returns those alternate greetings as a JSON array; the character's standard `{{firstMessage}}` is not included. When switching to a character with fewer alternate greetings, the higher indexed macros are unregistered.
+
+`{{nextMessages}}` returns the greetings offered by Waypoints' **Next greeting** picker as a JSON array. In solo chats, that means only greetings after the current greeting; in group chats, it matches the picker by including the other members' greetings and excluding the current selection. `{{currentMessage}}` and `{{nextMessage}}` return the configured current and upcoming greeting text, respectively.
 
 ### Handoff and advanced behavior
 

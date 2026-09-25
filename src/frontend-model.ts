@@ -1,4 +1,5 @@
 import { DEFAULT_SETTINGS, validateSettings } from "./config";
+import { nextGreetingChoices } from "./state";
 import type { Greeting, WaypointSettings, WaypointsView } from "./types";
 
 export type DrawerPage = "waypoints" | "settings";
@@ -41,16 +42,7 @@ export function canShowHud(floatingControls: boolean, grantedPermissions: readon
 
 export function greetingPickerOptions(kind: GreetingPickerKind, view: WaypointsView): Greeting[] {
   if (kind === "current") return view.greetings;
-  const active = view.active;
-  if (!active) return view.greetings;
-  if (view.isGroupChat) {
-    return view.greetings.filter((greeting) =>
-      greeting.characterId !== active.characterId || greeting.greetingIndex !== active.greetingIndex,
-    );
-  }
-  return view.greetings.filter((greeting) =>
-    greeting.characterId === active.characterId && greeting.greetingIndex > active.greetingIndex,
-  );
+  return nextGreetingChoices(view.greetings, view.active, view.isGroupChat);
 }
 
 export function shouldRefreshDrawer(eventName: string): boolean {

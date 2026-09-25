@@ -180,6 +180,9 @@ describe("WaypointEngine prompt and processor", () => {
     expect(ready.active).toBe(true);
     expect(ready.content).toContain("Greeting 2");
     expect(ready.altMessages).toEqual(["Greeting 2", "Greeting 3"]);
+    expect(ready.nextMessages).toEqual(["Greeting 2", "Greeting 3"]);
+    expect(ready.currentMessage).toBe("Greeting 1");
+    expect(ready.nextMessage).toBe("Greeting 2");
     // Macro previews must not create a chat variable or reconcile state.
     expect(host.variables.size).toBe(0);
 
@@ -188,7 +191,29 @@ describe("WaypointEngine prompt and processor", () => {
       active: false,
       content: "",
       altMessages: ["Greeting 2", "Greeting 3"],
+      nextMessages: ["Greeting 2", "Greeting 3"],
+      currentMessage: "Greeting 1",
+      nextMessage: "Greeting 2",
     });
+  });
+
+  test("exposes next choices and selected greeting text from Waypoints state", async () => {
+    const host = new FakeLumiverse(10);
+    const engine = new WaypointEngine(host.api);
+    await engine.setActive("chat", { characterId: "a", greetingIndex: 3 });
+    await engine.setUpcoming("chat", { characterId: "a", greetingIndex: 5 });
+
+    const values = await engine.loomValues("chat");
+    expect(values.currentMessage).toBe("Greeting 4");
+    expect(values.nextMessage).toBe("Greeting 6");
+    expect(values.nextMessages).toEqual([
+      "Greeting 5",
+      "Greeting 6",
+      "Greeting 7",
+      "Greeting 8",
+      "Greeting 9",
+      "Greeting 10",
+    ]);
   });
 
   test("strips and stamps configured handoff tags in the content processor", async () => {
