@@ -94,10 +94,12 @@ The handoff tag name and override marker are validated before save. Advanced set
 
 The optional floating ON / Undo / Force control is enabled by default. Lumiverse owns its drag position and reset behavior; Waypoints does not persist a competing position.
 
+The **Interface** section also has a chat-switch reminder, enabled by default. It asks whether to use Waypoints in the selected chat in a small floating widget. New chats get 10 seconds and existing chats get 5 seconds; the bar and second counter show the time left. **Yes** enables Waypoints for that chat and **No** pauses it. The timeout answer defaults to **Yes** and can be changed to **No** in Settings. A chat's choice is stored with that chat and can be changed later with **Use Waypoints in this chat** in the drawer. The reminder needs `ui_panels` permission and appears only when switching chats, not when the extension first loads. Lumiverse remembers where you drag the reminder and restores that position for later chats, separately from the floating controls.
+
 The **Interface** section also controls two input-bar surfaces, both enabled by default:
 
-- **Compass button** mounts a compact Waypoints compass beside Lumiverse's native action-bar buttons above the input. Its themed menu contains Toggle, Choose current greeting, Choose next greeting, Force, Undo, and Open Waypoints drawer.
-- **Extras actions** adds Toggle, Choose current greeting, Choose next greeting, Undo, and Force entries to Lumiverse's native **Extras** popover under the Waypoints extension heading.
+- **Compass button** mounts a compact Waypoints compass beside Lumiverse's native action-bar buttons above the input. Its themed menu contains the chat-level Toggle, Choose current greeting, Choose next greeting, Force, Undo, and Open Waypoints drawer.
+- **Extras actions** adds the chat-level Toggle, Choose current greeting, Choose next greeting, Undo, and Force entries to Lumiverse's native **Extras** popover under the Waypoints extension heading.
 
 The two greeting-choice actions open a full-size picker modeled on Greeting Inspector: choose from the available greetings, inspect a large scrollable preview, then confirm with **Use current greeting** or **Use next greeting**. In solo chats, next-greeting choices stay later in the active character's greeting sequence. In group chats, next-greeting choices include every member's greeting except the current one.
 

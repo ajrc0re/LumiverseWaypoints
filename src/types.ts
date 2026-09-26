@@ -26,6 +26,8 @@ export interface WaypointSettings {
   diagnosticLogging: boolean;
   diagnosticLineLimit: number;
   floatingControls: boolean;
+  reminderToast: boolean;
+  reminderTimeoutAction: "yes" | "no";
   actionBarButton: boolean;
   extrasActions: boolean;
 }
@@ -88,6 +90,7 @@ export interface TransitionJournal {
 
 export interface WaypointChatState {
   version: 1;
+  chatEnabled: boolean;
   active: GreetingSelection | null;
   upcoming: GreetingSelection | null;
   groupEnabledByCharacter: Record<string, boolean>;
@@ -150,6 +153,7 @@ export interface CharacterView {
 
 export interface WaypointsView {
   chatId: string | null;
+  chatEnabled: boolean;
   isGroupChat: boolean;
   grantedPermissions: string[];
   characters: CharacterView[];

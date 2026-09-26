@@ -39,6 +39,8 @@ var DEFAULT_SETTINGS = {
   diagnosticLogging: true,
   diagnosticLineLimit: 96,
   floatingControls: true,
+  reminderToast: true,
+  reminderTimeoutAction: "yes",
   actionBarButton: true,
   extrasActions: true
 };
@@ -103,6 +105,15 @@ function readRole(input, issues) {
     return DEFAULT_SETTINGS.promptRole;
   }
   return value;
+}
+function readReminderTimeoutAction(input, issues) {
+  const value = input.reminderTimeoutAction;
+  if (value === undefined)
+    return DEFAULT_SETTINGS.reminderTimeoutAction;
+  if (value === "yes" || value === "no")
+    return value;
+  issues.push({ field: "reminderTimeoutAction", message: "Reminder timeout action must be Yes or No." });
+  return DEFAULT_SETTINGS.reminderTimeoutAction;
 }
 function validateTagName(value) {
   return TAG_NAME.test(value);
@@ -221,6 +232,8 @@ function validateSettings(input) {
     diagnosticLogging: readBoolean(source, "diagnosticLogging", DEFAULT_SETTINGS.diagnosticLogging, issues),
     diagnosticLineLimit: readInteger(source, "diagnosticLineLimit", DEFAULT_SETTINGS.diagnosticLineLimit, 10, 500, issues),
     floatingControls: readBoolean(source, "floatingControls", DEFAULT_SETTINGS.floatingControls, issues),
+    reminderToast: readBoolean(source, "reminderToast", DEFAULT_SETTINGS.reminderToast, issues),
+    reminderTimeoutAction: readReminderTimeoutAction(source, issues),
     actionBarButton: readBoolean(source, "actionBarButton", DEFAULT_SETTINGS.actionBarButton, issues),
     extrasActions: readBoolean(source, "extrasActions", DEFAULT_SETTINGS.extrasActions, issues)
   };
@@ -335,6 +348,7 @@ var waypointStyles = [
   ".wp-action-bar-mount{display:contents}.wp-action-bar-button{appearance:none;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;flex:0 0 28px;padding:0;border:0;border-radius:4px;background:transparent;color:var(--lumiverse-text-muted,#9da0a8);cursor:pointer}.wp-action-bar-button:hover{background:var(--lumiverse-bg-hover,#34363c)}.wp-action-bar-button:focus-visible{outline:2px solid var(--lumiverse-primary,#8b7cff);outline-offset:-2px}.wp-action-bar-button:disabled{opacity:.45;cursor:not-allowed}.wp-action-bar-button svg{width:15px;height:15px}",
   ".wp-picker{height:min(78vh,900px);min-height:min(560px,calc(100vh - 170px));display:flex;min-width:0;flex-direction:column;overflow:hidden;color:var(--lumiverse-text,#ececf1);font:13px/1.45 system-ui,sans-serif}.wp-picker *{box-sizing:border-box}.wp-picker-main{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:12px;padding:16px;overflow:hidden}.wp-picker-meta{color:var(--lumiverse-text-muted,#9da0a8);font-size:12px;line-height:1.35;overflow-wrap:anywhere}.wp-picker-field{display:grid;gap:6px;flex:0 0 auto}.wp-picker-label{color:var(--lumiverse-text-muted,#9da0a8);font-size:12px}.wp-picker-select{width:100%;min-height:54px;color:var(--lumiverse-text,#ececf1);background:var(--lumiverse-fill,rgba(255,255,255,.08));border:1px solid var(--lumiverse-border,#34363c);border-radius:7px;padding:13px 14px;font:600 16px/1.35 system-ui,sans-serif}.wp-picker-preview{flex:1 1 auto;min-height:0;overflow:auto;background:rgba(0,0,0,.22);border:1px solid var(--lumiverse-border,#34363c);border-radius:8px}.wp-picker-preview pre{margin:0;padding:14px;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;font:13px/1.45 ui-monospace,Consolas,monospace}.wp-picker-error{flex:0 0 auto;color:#ef8b8b;border-left:3px solid #e66161;background:color-mix(in srgb,#e66161 11%,transparent);padding:8px 10px;border-radius:4px}.wp-picker-footer{flex:0 0 auto;display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 16px 16px;border-top:1px solid var(--lumiverse-border,#34363c)}",
   ".wp-hud{display:flex;align-items:center;gap:5px;height:100%;box-sizing:border-box;background:var(--lumiverse-bg-elevated,#202126);border:1px solid var(--lumiverse-border,#34363c);border-radius:8px;padding:5px 7px;box-shadow:0 4px 16px #0006}.wp-hud-label{font-weight:700;font-size:12px;margin-right:2px}.wp-hud .wp-button{font-size:11px;padding:4px 6px}",
+  ".wp-reminder{width:100%;height:100%;color:var(--lumiverse-text,#ececf1);font:13px/1.35 system-ui,sans-serif}.wp-reminder-card{box-sizing:border-box;width:100%;height:100%;overflow:hidden;border:1px solid color-mix(in srgb,var(--lumiverse-primary,#8b7cff) 80%,white);border-left:4px solid var(--lumiverse-primary,#8b7cff);border-radius:9px;background:var(--lumiverse-bg-elevated,#202126);box-shadow:0 8px 28px #0009;padding:9px 10px 0}.wp-reminder-title{font-weight:750;color:var(--lumiverse-primary,#ad9dff);font-size:12px}.wp-reminder-copy{font-size:12px;margin-top:2px}.wp-reminder-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-top:5px}.wp-reminder-count{margin-right:auto;font:700 11px/1 ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums}.wp-reminder .wp-button{font-size:11px;line-height:1;padding:5px 10px}.wp-reminder-track{height:4px;margin:7px -10px 0;background:color-mix(in srgb,var(--lumiverse-primary,#8b7cff) 20%,transparent);overflow:hidden}.wp-reminder-progress{width:100%;height:100%;background:var(--lumiverse-primary,#8b7cff);transform-origin:left center;will-change:transform}",
   "@media (max-height:760px){.wp-picker{height:calc(100vh - 170px);min-height:0}}@media (max-width:430px){.wp-root{padding:8px}.wp-header{display:block}.wp-header .wp-button{margin-top:8px}.wp-grid{grid-template-columns:1fr}}"
 ].join(`
 `);
@@ -425,6 +439,9 @@ function setup(ctx) {
   let selectionVersion = 0;
   let refreshFlight;
   let hud;
+  let reminder;
+  let pendingReminderChatId = null;
+  const createdChatIds = new Map;
   let extrasActions = [];
   let pickerModal;
   let pickerOpen = false;
@@ -477,6 +494,11 @@ function setup(ctx) {
     const next = ctx.getActiveChat();
     if (next.chatId === selection.chatId && next.characterId === selection.characterId)
       return false;
+    const chatChanged = next.chatId !== selection.chatId;
+    if (chatChanged) {
+      dismissReminder();
+      pendingReminderChatId = next.chatId;
+    }
     selection = next;
     selectionVersion += 1;
     refreshFlight = undefined;
@@ -494,6 +516,76 @@ function setup(ctx) {
     syncActionControls();
     syncHud();
     return true;
+  }
+  function dismissReminder() {
+    if (!reminder)
+      return;
+    clearInterval(reminder.interval);
+    reminder.widget.destroy();
+    reminder = undefined;
+  }
+  function updateReminder() {
+    if (!reminder)
+      return;
+    const remaining = Math.max(0, reminder.deadline - Date.now());
+    reminder.count.textContent = String(Math.ceil(remaining / 1000)) + "s";
+    reminder.progress.style.transform = "scaleX(" + String(remaining / reminder.durationMs) + ")";
+    if (remaining === 0)
+      chooseReminder(reminder.chatId, reminder.version, view?.settings.reminderTimeoutAction !== "no");
+  }
+  function chooseReminder(chatId, version, enabled) {
+    dismissReminder();
+    if (destroyed || version !== selectionVersion || ctx.getActiveChat().chatId !== chatId)
+      return;
+    safely(async () => {
+      await rpc("set-chat-enabled", { chatId, enabled });
+      await load();
+    });
+  }
+  function maybeShowReminder() {
+    if (!view || !pendingReminderChatId || pendingReminderChatId !== view.chatId)
+      return;
+    const chatId = pendingReminderChatId;
+    pendingReminderChatId = null;
+    if (!view.settings.reminderToast || !view.grantedPermissions.includes("ui_panels") || !view.greetings.length)
+      return;
+    const createdAt = createdChatIds.get(chatId);
+    createdChatIds.delete(chatId);
+    const durationMs = createdAt !== undefined && Date.now() - createdAt < 60000 ? 1e4 : 5000;
+    let widget;
+    try {
+      const viewportWidth = document.defaultView?.innerWidth ?? 1280;
+      const options = {
+        width: 316,
+        height: 112,
+        initialPosition: { x: Math.max(12, viewportWidth - 332), y: 68 },
+        snapToEdge: true,
+        chromeless: true,
+        tooltip: "Waypoints chat reminder",
+        persistGeometry: "chat-reminder"
+      };
+      widget = ctx.ui.createFloatWidget(options);
+    } catch (error) {
+      console.warn("[Waypoints] reminder widget unavailable", error);
+      return;
+    }
+    const version = selectionVersion;
+    const card = element("div", "wp-reminder-card");
+    card.setAttribute("role", "status");
+    card.append(element("div", "wp-reminder-title", view.chatEnabled ? "Waypoints is active" : "Waypoints is off"));
+    card.append(element("div", "wp-reminder-copy", "Use Waypoints for this chat?"));
+    const actions = element("div", "wp-reminder-actions");
+    const count = element("span", "wp-reminder-count", String(durationMs / 1000) + "s");
+    actions.append(count, button("No", () => chooseReminder(chatId, version, false)), button("Yes", () => chooseReminder(chatId, version, true), "primary"));
+    card.append(actions);
+    const track = element("div", "wp-reminder-track");
+    const progress = element("div", "wp-reminder-progress");
+    track.append(progress);
+    card.append(track);
+    widget.root.className = "wp-reminder";
+    widget.root.replaceChildren(card);
+    reminder = { chatId, version, widget, durationMs, deadline: Date.now() + durationMs, interval: setInterval(updateReminder, 50), count, progress };
+    updateReminder();
   }
   function isCurrentSelection(version) {
     if (destroyed)
@@ -588,6 +680,9 @@ function setup(ctx) {
         render();
         syncActionControls();
         syncHud();
+        if (reminder && !loaded.settings.reminderToast)
+          dismissReminder();
+        maybeShowReminder();
       } while (flight.queued);
     })().finally(() => {
       if (refreshFlight === flight)
@@ -623,22 +718,11 @@ function setup(ctx) {
       }
     }
   }
-  function selectedControlCharacter() {
+  async function toggleChatEnabled() {
     if (!view)
-      return;
-    const selectedGreeting = view.upcoming ?? view.active;
-    return selectedGreeting ? view.characters.find((character) => character.id === selectedGreeting.characterId) : undefined;
-  }
-  async function toggleSelectedCharacter() {
-    const character = selectedControlCharacter();
-    if (!character)
-      throw new Error("Choose an active or upcoming greeting first.");
+      throw new Error("Open a chat first.");
     const chatId = requireCurrentChatId();
-    await rpc("set-enabled", {
-      chatId,
-      characterId: character.id,
-      enabled: !character.enabled
-    });
+    await rpc("set-chat-enabled", { chatId, enabled: !view.chatEnabled });
     await load();
   }
   async function forceTransition() {
@@ -813,7 +897,6 @@ function setup(ctx) {
     if (!actionBarButton || busy || !view)
       return;
     const version = selectionVersion;
-    const character = selectedControlCharacter();
     const rect = actionBarButton.getBoundingClientRect();
     let result;
     try {
@@ -822,9 +905,9 @@ function setup(ctx) {
         items: [
           {
             key: "toggle",
-            label: character ? (character.enabled ? "Disable Waypoints" : "Enable Waypoints") + " — " + character.name : "Toggle Waypoints",
-            active: character?.enabled,
-            disabled: !character
+            label: view.chatEnabled ? "Disable Waypoints for this chat" : "Enable Waypoints for this chat",
+            active: view.chatEnabled,
+            disabled: !view.chatId
           },
           { key: "choose-current", label: "Choose current greeting", disabled: greetingPickerOptions("current", view).length === 0 },
           { key: "choose-next", label: "Choose next greeting", disabled: greetingPickerOptions("next", view).length === 0 },
@@ -844,7 +927,7 @@ function setup(ctx) {
     if (!isCurrentSelection(version))
       return;
     if (result.selectedKey === "toggle")
-      safely(toggleSelectedCharacter);
+      safely(toggleChatEnabled);
     else if (result.selectedKey === "choose-current")
       openPickerSafely("current");
     else if (result.selectedKey === "choose-next")
@@ -857,7 +940,6 @@ function setup(ctx) {
       tab.activate();
   }
   function syncActionControls() {
-    const character = selectedControlCharacter();
     const settings = view?.settings;
     const actionBarVisible = settings?.actionBarButton === true;
     if (actionBarMount)
@@ -865,7 +947,7 @@ function setup(ctx) {
     if (actionBarButton) {
       actionBarButton.hidden = !actionBarVisible;
       actionBarButton.disabled = busy || !view;
-      actionBarButton.title = character ? "Waypoints controls — " + (character.enabled ? "ON" : "OFF") : "Waypoints controls";
+      actionBarButton.title = view?.chatId ? "Waypoints controls — " + (view.chatEnabled ? "ON" : "OFF") : "Waypoints controls";
       actionBarButton.setAttribute("aria-label", actionBarButton.title);
     }
     const extrasVisible = settings?.extrasActions === true && !busy && Boolean(view?.chatId);
@@ -873,8 +955,8 @@ function setup(ctx) {
       action.setEnabled(extrasVisible);
     if (extrasActions.length < 5)
       return;
-    extrasActions[0].setLabel(character ? character.enabled ? "Disable Waypoints" : "Enable Waypoints" : "Toggle Waypoints");
-    extrasActions[0].setSubtitle(character?.name ?? "Choose an active or upcoming greeting");
+    extrasActions[0].setLabel(view?.chatEnabled ? "Disable Waypoints for this chat" : "Enable Waypoints for this chat");
+    extrasActions[0].setSubtitle("Changes only this chat");
     extrasActions[1].setLabel("Choose current greeting");
     extrasActions[1].setSubtitle("Select the greeting Waypoints treats as current");
     extrasActions[2].setLabel("Choose next greeting");
@@ -890,7 +972,7 @@ function setup(ctx) {
       registered.push(ctx.ui.registerInputBarAction({
         id: "toggle-waypoints",
         label: "Toggle Waypoints",
-        subtitle: "Enable or disable the selected character",
+        subtitle: "Enable or disable Waypoints for this chat",
         iconSvg: WAYPOINTS_COMPASS_ICON,
         enabled: false
       }));
@@ -924,7 +1006,7 @@ function setup(ctx) {
       }));
       extrasActions = registered;
       disposers.push(registered[0].onClick(() => {
-        safely(toggleSelectedCharacter);
+        safely(toggleChatEnabled);
       }), registered[1].onClick(() => openPickerSafely("current")), registered[2].onClick(() => openPickerSafely("next")), registered[3].onClick(() => {
         safely(undoTransition);
       }), registered[4].onClick(() => {
@@ -1024,6 +1106,23 @@ function setup(ctx) {
     heading.append(headingText);
     heading.append(button("Refresh", refresh));
     status.append(heading, element("p", "wp-muted", view.status));
+    if (view.chatId) {
+      const chatRow = element("div", "wp-character");
+      chatRow.append(element("div", "wp-character-name", "Use Waypoints in this chat"));
+      const chatTarget = element("div", "wp-native");
+      chatRow.append(chatTarget);
+      status.append(chatRow);
+      componentHandles.push(ctx.components.mountSwitch(chatTarget, {
+        checked: view.chatEnabled,
+        ariaLabel: "Use Waypoints in this chat",
+        onChange: (checked) => {
+          safely(async () => {
+            await rpc("set-chat-enabled", { chatId: requireCurrentChatId(), enabled: checked });
+            await load();
+          });
+        }
+      }));
+    }
     parent.append(status);
     const selections = element("section", "wp-section");
     selections.append(element("h3", "", "Greeting path"));
@@ -1288,6 +1387,26 @@ function setup(ctx) {
         updateDraftValidation(validation);
       }
     }));
+    const reminderTarget = element("div", "wp-native");
+    settings.append(reminderTarget);
+    componentHandles.push(ctx.components.mountCheckbox(reminderTarget, {
+      checked: draft.reminderToast,
+      label: "Ask whether to use Waypoints when switching chats",
+      hint: "Shows a brief floating reminder when a chat opens. Requires ui_panels permission.",
+      onChange: (checked) => {
+        draft.reminderToast = checked;
+        updateDraftValidation(validation);
+      }
+    }));
+    addField(settings, "When reminder time runs out", "New chats get 10 seconds; existing chats get 5 seconds.", (target) => ctx.components.mountSelect(target, {
+      value: draft.reminderTimeoutAction,
+      options: [{ value: "yes", label: "Yes — use Waypoints" }, { value: "no", label: "No — turn Waypoints off for this chat" }],
+      onChange: (value) => {
+        if (value === "yes" || value === "no")
+          draft.reminderTimeoutAction = value;
+        updateDraftValidation(validation);
+      }
+    }));
     const actionBarTarget = element("div", "wp-native");
     settings.append(actionBarTarget);
     componentHandles.push(ctx.components.mountCheckbox(actionBarTarget, {
@@ -1370,9 +1489,7 @@ function setup(ctx) {
     root2.replaceChildren();
     root2.className = "wp-hud";
     root2.append(element("span", "wp-hud-label", "Waypoints"));
-    const character = selectedControlCharacter();
-    const enabled = character?.enabled ?? false;
-    root2.append(button(enabled ? "ON" : "OFF", () => safely(toggleSelectedCharacter), "", !character));
+    root2.append(button(view.chatEnabled ? "ON" : "OFF", () => safely(toggleChatEnabled), "", !view.chatId));
     root2.append(button("Undo", () => safely(undoTransition), "", !view.canUndo));
     root2.append(button("Force", () => safely(forceTransition), "primary", !view.upcoming));
   }
@@ -1421,6 +1538,20 @@ function setup(ctx) {
   disposers.push(tab.onActivate(refresh));
   disposers.push(ctx.events.on("CHAT_SWITCHED", refresh));
   disposers.push(ctx.events.on("CHAT_CHANGED", refresh));
+  disposers.push(ctx.events.on("CHAT_CREATED", (payload) => {
+    const data = safeRecord(payload);
+    const chat = safeRecord(data.chat);
+    const chatId = typeof data.id === "string" ? data.id : typeof chat.id === "string" ? chat.id : null;
+    if (!chatId)
+      return;
+    createdChatIds.set(chatId, Date.now());
+    if (reminder?.chatId === chatId && reminder.durationMs === 5000) {
+      createdChatIds.delete(chatId);
+      reminder.durationMs = 1e4;
+      reminder.deadline += 5000;
+      updateReminder();
+    }
+  }));
   const selectionChanged = () => {
     if (syncSelection())
       refresh();
@@ -1450,6 +1581,7 @@ function setup(ctx) {
       request.reject(new Error("Waypoints closed."));
     }
     pending.clear();
+    dismissReminder();
     pickerModal?.dismiss();
     hud?.destroy();
     for (const action of extrasActions)

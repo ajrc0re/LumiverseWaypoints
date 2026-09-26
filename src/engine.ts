@@ -272,7 +272,7 @@ export class WaypointEngine {
     state: WaypointChatState,
     selection: GreetingSelection | null,
   ): boolean {
-    return selection !== null && this.isCharacterEnabled(context, state, selection.characterId);
+    return state.chatEnabled && selection !== null && this.isCharacterEnabled(context, state, selection.characterId);
   }
 
   private promptStatus(
@@ -298,7 +298,7 @@ export class WaypointEngine {
         role: settings.promptRole,
         insertionDepth: settings.insertionDepth,
         content: "",
-        reason: "The upcoming greeting's character is turned off.",
+        reason: state.chatEnabled ? "The upcoming greeting's character is turned off." : "Waypoints is off for this chat.",
       };
     }
     const rendered = renderPrompt(settings, upcoming.text);
@@ -420,7 +420,7 @@ export class WaypointEngine {
     const greeting = greetingForSelection(context.greetings, target);
     if (!greeting) return { advanced: false, reason: "The selected upcoming greeting no longer exists." };
     if (!this.isSelectionEnabled(context, state, target)) {
-      return { advanced: false, reason: "The upcoming greeting's character is turned off." };
+      return { advanced: false, reason: state.chatEnabled ? "The upcoming greeting's character is turned off." : "Waypoints is off for this chat." };
     }
 
     const journal: TransitionJournal = {
@@ -546,6 +546,7 @@ export class WaypointEngine {
       const context = await this.context(signal.chatId);
       const state = reconcileChatState(await this.state(signal.chatId), context);
       await this.reconcileJournalLocked(signal.chatId, state, context, settings);
+      if (!state.chatEnabled) return { advanced: false, reason: "Waypoints is off for this chat." };
       if (state.recentTransitionKeys.includes(signal.eventKey)) {
         return { advanced: false, reason: "This handoff was already processed." };
       }
@@ -698,6 +699,18 @@ export class WaypointEngine {
     });
   }
 
+  async setChatEnabled(chatId: string, enabled: boolean): Promise<void> {
+    this.assertPermissions(CONTEXT_PERMISSIONS, "Changing this chat's Waypoints state");
+    await this.serial(chatId, async () => {
+      const context = await this.context(chatId);
+      const state = reconcileChatState(await this.state(chatId), context);
+      state.chatEnabled = enabled;
+      if (!enabled) state.pendingHandoffs = [];
+      await this.persistState(chatId, state);
+      this.note("chat " + chatId + " Waypoints " + (enabled ? "enabled" : "disabled"));
+    });
+  }
+
   async intercept(messages: LlmMessageDTO[], chatId: string): Promise<LlmMessageDTO[] | InterceptorResultDTO> {
     try {
       const settings = await this.settings();
@@ -796,6 +809,7 @@ export class WaypointEngine {
     if (this.missingPermissions(CONTEXT_PERMISSIONS).length) {
       return {
         chatId: null,
+        chatEnabled: true,
         isGroupChat: false,
         grantedPermissions,
         characters: [],
@@ -821,6 +835,7 @@ export class WaypointEngine {
     if (!resolvedChatId) {
       return {
         chatId: null,
+        chatEnabled: true,
         isGroupChat: false,
         grantedPermissions,
         characters: [],
@@ -852,13 +867,16 @@ export class WaypointEngine {
       const canUndo = this.api.permissions.has("chat_mutation")
         ? Boolean(await this.latestInsertedGreeting(resolvedChatId).catch(() => null))
         : false;
-      const status = !state.upcoming
+      const status = !state.chatEnabled
+        ? "Waypoints is off for this chat."
+        : !state.upcoming
         ? "No upcoming greeting is selected."
         : !this.isSelectionEnabled(context, state, state.upcoming)
           ? "The selected upcoming character is turned off."
           : "Ready: " + upcoming?.characterName + " greeting " + String((upcoming?.greetingIndex ?? 0) + 1) + ".";
       return {
         chatId: resolvedChatId,
+        chatEnabled: state.chatEnabled,
         isGroupChat: context.isGroupChat,
         grantedPermissions,
         characters: context.characters.map((character) => ({

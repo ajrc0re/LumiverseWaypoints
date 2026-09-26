@@ -46,6 +46,8 @@ export const DEFAULT_SETTINGS: WaypointSettings = {
   diagnosticLogging: true,
   diagnosticLineLimit: 96,
   floatingControls: true,
+  reminderToast: true,
+  reminderTimeoutAction: "yes",
   actionBarButton: true,
   extrasActions: true,
 };
@@ -133,6 +135,14 @@ function readRole(
     return DEFAULT_SETTINGS.promptRole;
   }
   return value as PromptRole;
+}
+
+function readReminderTimeoutAction(input: Record<string, unknown>, issues: SettingsValidationIssue[]): "yes" | "no" {
+  const value = input.reminderTimeoutAction;
+  if (value === undefined) return DEFAULT_SETTINGS.reminderTimeoutAction;
+  if (value === "yes" || value === "no") return value;
+  issues.push({ field: "reminderTimeoutAction", message: "Reminder timeout action must be Yes or No." });
+  return DEFAULT_SETTINGS.reminderTimeoutAction;
 }
 
 export function validateTagName(value: string): boolean {
@@ -255,6 +265,8 @@ export function validateSettings(input: unknown): SettingsValidationResult {
     diagnosticLogging: readBoolean(source, "diagnosticLogging", DEFAULT_SETTINGS.diagnosticLogging, issues),
     diagnosticLineLimit: readInteger(source, "diagnosticLineLimit", DEFAULT_SETTINGS.diagnosticLineLimit, 10, 500, issues),
     floatingControls: readBoolean(source, "floatingControls", DEFAULT_SETTINGS.floatingControls, issues),
+    reminderToast: readBoolean(source, "reminderToast", DEFAULT_SETTINGS.reminderToast, issues),
+    reminderTimeoutAction: readReminderTimeoutAction(source, issues),
     actionBarButton: readBoolean(source, "actionBarButton", DEFAULT_SETTINGS.actionBarButton, issues),
     extrasActions: readBoolean(source, "extrasActions", DEFAULT_SETTINGS.extrasActions, issues),
   };

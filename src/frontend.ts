@@ -117,6 +117,18 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let selectionVersion = 0;
   let refreshFlight: { version: number; queued: boolean; promise: Promise<void> } | undefined;
   let hud: SpindleFloatWidgetHandle | undefined;
+  let reminder: {
+    chatId: string;
+    version: number;
+    widget: SpindleFloatWidgetHandle;
+    durationMs: number;
+    deadline: number;
+    interval: ReturnType<typeof setInterval>;
+    count: HTMLElement;
+    progress: HTMLElement;
+  } | undefined;
+  let pendingReminderChatId: string | null = null;
+  const createdChatIds = new Map<string, number>();
   let extrasActions: SpindleInputBarActionHandle[] = [];
   let pickerModal: SpindleModalHandle | undefined;
   let pickerOpen = false;
@@ -174,6 +186,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (destroyed) return false;
     const next = ctx.getActiveChat();
     if (next.chatId === selection.chatId && next.characterId === selection.characterId) return false;
+    const chatChanged = next.chatId !== selection.chatId;
+    if (chatChanged) {
+      dismissReminder();
+      pendingReminderChatId = next.chatId;
+    }
     selection = next;
     selectionVersion += 1;
     refreshFlight = undefined;
@@ -191,6 +208,76 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     syncActionControls();
     syncHud();
     return true;
+  }
+
+  function dismissReminder(): void {
+    if (!reminder) return;
+    clearInterval(reminder.interval);
+    reminder.widget.destroy();
+    reminder = undefined;
+  }
+
+  function updateReminder(): void {
+    if (!reminder) return;
+    const remaining = Math.max(0, reminder.deadline - Date.now());
+    reminder.count.textContent = String(Math.ceil(remaining / 1000)) + "s";
+    reminder.progress.style.transform = "scaleX(" + String(remaining / reminder.durationMs) + ")";
+    if (remaining === 0) chooseReminder(reminder.chatId, reminder.version, view?.settings.reminderTimeoutAction !== "no");
+  }
+
+  function chooseReminder(chatId: string, version: number, enabled: boolean): void {
+    dismissReminder();
+    if (destroyed || version !== selectionVersion || ctx.getActiveChat().chatId !== chatId) return;
+    void safely(async () => {
+      await rpc("set-chat-enabled", { chatId, enabled });
+      await load();
+    });
+  }
+
+  function maybeShowReminder(): void {
+    if (!view || !pendingReminderChatId || pendingReminderChatId !== view.chatId) return;
+    const chatId = pendingReminderChatId;
+    pendingReminderChatId = null;
+    if (!view.settings.reminderToast || !view.grantedPermissions.includes("ui_panels") || !view.greetings.length) return;
+    const createdAt = createdChatIds.get(chatId);
+    createdChatIds.delete(chatId);
+    const durationMs = createdAt !== undefined && Date.now() - createdAt < 60_000 ? 10_000 : 5_000;
+    let widget: SpindleFloatWidgetHandle;
+    try {
+      const viewportWidth = document.defaultView?.innerWidth ?? 1280;
+      // Lumiverse restores geometry only when a stable persistGeometry key is provided.
+      // Keep this separate from the always-visible controls widget.
+      const options = {
+        width: 316,
+        height: 112,
+        initialPosition: { x: Math.max(12, viewportWidth - 332), y: 68 },
+        snapToEdge: true,
+        chromeless: true,
+        tooltip: "Waypoints chat reminder",
+        persistGeometry: "chat-reminder",
+      };
+      widget = ctx.ui.createFloatWidget(options);
+    } catch (error) {
+      console.warn("[Waypoints] reminder widget unavailable", error);
+      return;
+    }
+    const version = selectionVersion;
+    const card = element("div", "wp-reminder-card");
+    card.setAttribute("role", "status");
+    card.append(element("div", "wp-reminder-title", view.chatEnabled ? "Waypoints is active" : "Waypoints is off"));
+    card.append(element("div", "wp-reminder-copy", "Use Waypoints for this chat?"));
+    const actions = element("div", "wp-reminder-actions");
+    const count = element("span", "wp-reminder-count", String(durationMs / 1000) + "s");
+    actions.append(count, button("No", () => chooseReminder(chatId, version, false)), button("Yes", () => chooseReminder(chatId, version, true), "primary"));
+    card.append(actions);
+    const track = element("div", "wp-reminder-track");
+    const progress = element("div", "wp-reminder-progress");
+    track.append(progress);
+    card.append(track);
+    widget.root.className = "wp-reminder";
+    widget.root.replaceChildren(card);
+    reminder = { chatId, version, widget, durationMs, deadline: Date.now() + durationMs, interval: setInterval(updateReminder, 50), count, progress };
+    updateReminder();
   }
 
   function isCurrentSelection(version: number): boolean {
@@ -294,6 +381,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         render();
         syncActionControls();
         syncHud();
+        if (reminder && !loaded.settings.reminderToast) dismissReminder();
+        maybeShowReminder();
       } while (flight.queued);
     })().finally(() => {
       if (refreshFlight === flight) refreshFlight = undefined;
@@ -327,23 +416,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
   }
 
-  function selectedControlCharacter() {
-    if (!view) return undefined;
-    const selectedGreeting = view.upcoming ?? view.active;
-    return selectedGreeting
-      ? view.characters.find((character) => character.id === selectedGreeting.characterId)
-      : undefined;
-  }
-
-  async function toggleSelectedCharacter(): Promise<void> {
-    const character = selectedControlCharacter();
-    if (!character) throw new Error("Choose an active or upcoming greeting first.");
+  async function toggleChatEnabled(): Promise<void> {
+    if (!view) throw new Error("Open a chat first.");
     const chatId = requireCurrentChatId();
-    await rpc("set-enabled", {
-      chatId,
-      characterId: character.id,
-      enabled: !character.enabled,
-    });
+    await rpc("set-chat-enabled", { chatId, enabled: !view.chatEnabled });
     await load();
   }
 
@@ -527,7 +603,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (!isCurrentSelection(selectionVersion)) return;
     if (!actionBarButton || busy || !view) return;
     const version = selectionVersion;
-    const character = selectedControlCharacter();
     const rect = actionBarButton.getBoundingClientRect();
     let result: { selectedKey: string | null };
     try {
@@ -536,11 +611,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         items: [
           {
             key: "toggle",
-            label: character
-              ? (character.enabled ? "Disable Waypoints" : "Enable Waypoints") + " — " + character.name
-              : "Toggle Waypoints",
-            active: character?.enabled,
-            disabled: !character,
+            label: view.chatEnabled ? "Disable Waypoints for this chat" : "Enable Waypoints for this chat",
+            active: view.chatEnabled,
+            disabled: !view.chatId,
           },
           { key: "choose-current", label: "Choose current greeting", disabled: greetingPickerOptions("current", view).length === 0 },
           { key: "choose-next", label: "Choose next greeting", disabled: greetingPickerOptions("next", view).length === 0 },
@@ -557,7 +630,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       return;
     }
     if (!isCurrentSelection(version)) return;
-    if (result.selectedKey === "toggle") void safely(toggleSelectedCharacter);
+    if (result.selectedKey === "toggle") void safely(toggleChatEnabled);
     else if (result.selectedKey === "choose-current") openPickerSafely("current");
     else if (result.selectedKey === "choose-next") openPickerSafely("next");
     else if (result.selectedKey === "force") void safely(forceTransition);
@@ -566,25 +639,20 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   }
 
   function syncActionControls(): void {
-    const character = selectedControlCharacter();
     const settings = view?.settings;
     const actionBarVisible = settings?.actionBarButton === true;
     if (actionBarMount) actionBarMount.hidden = !actionBarVisible;
     if (actionBarButton) {
       actionBarButton.hidden = !actionBarVisible;
       actionBarButton.disabled = busy || !view;
-      actionBarButton.title = character
-        ? "Waypoints controls — " + (character.enabled ? "ON" : "OFF")
-        : "Waypoints controls";
+      actionBarButton.title = view?.chatId ? "Waypoints controls — " + (view.chatEnabled ? "ON" : "OFF") : "Waypoints controls";
       actionBarButton.setAttribute("aria-label", actionBarButton.title);
     }
     const extrasVisible = settings?.extrasActions === true && !busy && Boolean(view?.chatId);
     for (const action of extrasActions) action.setEnabled(extrasVisible);
     if (extrasActions.length < 5) return;
-    extrasActions[0].setLabel(character
-      ? (character.enabled ? "Disable Waypoints" : "Enable Waypoints")
-      : "Toggle Waypoints");
-    extrasActions[0].setSubtitle(character?.name ?? "Choose an active or upcoming greeting");
+    extrasActions[0].setLabel(view?.chatEnabled ? "Disable Waypoints for this chat" : "Enable Waypoints for this chat");
+    extrasActions[0].setSubtitle("Changes only this chat");
     extrasActions[1].setLabel("Choose current greeting");
     extrasActions[1].setSubtitle("Select the greeting Waypoints treats as current");
     extrasActions[2].setLabel("Choose next greeting");
@@ -601,7 +669,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       registered.push(ctx.ui.registerInputBarAction({
         id: "toggle-waypoints",
         label: "Toggle Waypoints",
-        subtitle: "Enable or disable the selected character",
+        subtitle: "Enable or disable Waypoints for this chat",
         iconSvg: WAYPOINTS_COMPASS_ICON,
         enabled: false,
       }));
@@ -635,7 +703,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       }));
       extrasActions = registered;
       disposers.push(
-        registered[0].onClick(() => { void safely(toggleSelectedCharacter); }),
+        registered[0].onClick(() => { void safely(toggleChatEnabled); }),
         registered[1].onClick(() => openPickerSafely("current")),
         registered[2].onClick(() => openPickerSafely("next")),
         registered[3].onClick(() => { void safely(undoTransition); }),
@@ -746,6 +814,23 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     heading.append(headingText);
     heading.append(button("Refresh", refresh));
     status.append(heading, element("p", "wp-muted", view.status));
+    if (view.chatId) {
+      const chatRow = element("div", "wp-character");
+      chatRow.append(element("div", "wp-character-name", "Use Waypoints in this chat"));
+      const chatTarget = element("div", "wp-native");
+      chatRow.append(chatTarget);
+      status.append(chatRow);
+      componentHandles.push(ctx.components.mountSwitch(chatTarget, {
+        checked: view.chatEnabled,
+        ariaLabel: "Use Waypoints in this chat",
+        onChange: (checked) => {
+          void safely(async () => {
+            await rpc("set-chat-enabled", { chatId: requireCurrentChatId(), enabled: checked });
+            await load();
+          });
+        },
+      }));
+    }
     parent.append(status);
 
     const selections = element("section", "wp-section");
@@ -1053,6 +1138,27 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         updateDraftValidation(validation);
       },
     }));
+    const reminderTarget = element("div", "wp-native");
+    settings.append(reminderTarget);
+    componentHandles.push(ctx.components.mountCheckbox(reminderTarget, {
+      checked: draft.reminderToast,
+      label: "Ask whether to use Waypoints when switching chats",
+      hint: "Shows a brief floating reminder when a chat opens. Requires ui_panels permission.",
+      onChange: (checked) => {
+        draft.reminderToast = checked;
+        updateDraftValidation(validation);
+      },
+    }));
+    addField(settings, "When reminder time runs out", "New chats get 10 seconds; existing chats get 5 seconds.", (target) =>
+      ctx.components.mountSelect(target, {
+        value: draft.reminderTimeoutAction,
+        options: [{ value: "yes", label: "Yes — use Waypoints" }, { value: "no", label: "No — turn Waypoints off for this chat" }],
+        onChange: (value) => {
+          if (value === "yes" || value === "no") draft.reminderTimeoutAction = value;
+          updateDraftValidation(validation);
+        },
+      }),
+    );
     const actionBarTarget = element("div", "wp-native");
     settings.append(actionBarTarget);
     componentHandles.push(ctx.components.mountCheckbox(actionBarTarget, {
@@ -1139,9 +1245,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     root.replaceChildren();
     root.className = "wp-hud";
     root.append(element("span", "wp-hud-label", "Waypoints"));
-    const character = selectedControlCharacter();
-    const enabled = character?.enabled ?? false;
-    root.append(button(enabled ? "ON" : "OFF", () => safely(toggleSelectedCharacter), "", !character));
+    root.append(button(view.chatEnabled ? "ON" : "OFF", () => safely(toggleChatEnabled), "", !view.chatId));
     root.append(button("Undo", () => safely(undoTransition), "", !view.canUndo));
     root.append(button("Force", () => safely(forceTransition), "primary", !view.upcoming));
   }
@@ -1185,6 +1289,19 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   disposers.push(tab.onActivate(refresh));
   disposers.push(ctx.events.on("CHAT_SWITCHED", refresh));
   disposers.push(ctx.events.on("CHAT_CHANGED", refresh));
+  disposers.push(ctx.events.on("CHAT_CREATED", (payload) => {
+    const data = safeRecord(payload);
+    const chat = safeRecord(data.chat);
+    const chatId = typeof data.id === "string" ? data.id : typeof chat.id === "string" ? chat.id : null;
+    if (!chatId) return;
+    createdChatIds.set(chatId, Date.now());
+    if (reminder?.chatId === chatId && reminder.durationMs === 5_000) {
+      createdChatIds.delete(chatId);
+      reminder.durationMs = 10_000;
+      reminder.deadline += 5_000;
+      updateReminder();
+    }
+  }));
   const selectionChanged = () => { if (syncSelection()) refresh(); };
   let subscribed = false;
   try {
@@ -1214,6 +1331,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       request.reject(new Error("Waypoints closed."));
     }
     pending.clear();
+    dismissReminder();
     pickerModal?.dismiss();
     hud?.destroy();
     for (const action of extrasActions) action.destroy();

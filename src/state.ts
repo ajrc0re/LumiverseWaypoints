@@ -61,6 +61,7 @@ function pendingFrom(value: unknown): PendingHandoff[] {
 export function emptyChatState(): WaypointChatState {
   return {
     version: 1,
+    chatEnabled: true,
     active: null,
     upcoming: null,
     groupEnabledByCharacter: {},
@@ -82,6 +83,7 @@ export function parseChatState(value: string | undefined | null): WaypointChatSt
     }
     return {
       version: 1,
+      chatEnabled: parsed.chatEnabled !== false,
       active: selectionFrom(parsed.active),
       upcoming: selectionFrom(parsed.upcoming),
       groupEnabledByCharacter,

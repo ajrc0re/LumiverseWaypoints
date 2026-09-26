@@ -15,7 +15,7 @@ function status(chatId: string | null): WaypointsView {
     characterId, characterName: name, greetingIndex, text: name + " greeting " + greetingIndex,
   })) : [];
   return {
-    chatId, isGroupChat: false, grantedPermissions: ["ui_panels"], missingPermissions: [],
+    chatId, chatEnabled: true, isGroupChat: false, grantedPermissions: ["ui_panels"], missingPermissions: [],
     characters: chatId ? [{ id: characterId, name, enabled: true }] : [],
     greetings, active: greetings[0] ?? null, upcoming: greetings[1] ?? null, canUndo: Boolean(chatId),
     status: chatId ? "Ready: " + name : "Open a character or group chat to use Waypoints.",
@@ -41,7 +41,7 @@ class FrontendHost {
   readonly drawer = this.dom.window.document.createElement("div");
   readonly actionBar = this.dom.window.document.createElement("div");
   readonly extras = new Map<string, HTMLButtonElement>();
-  readonly events = new Map<string, () => void>();
+  readonly events = new Map<string, (payload?: unknown) => void>();
   readonly requests: Request[] = [];
   readonly answered = new Set<string>();
   selection: Selection = { chatId: "chat-a", characterId: "a" };
@@ -51,6 +51,10 @@ class FrontendHost {
   menuChoice?: (result: { selectedKey: string | null }) => void;
   modal?: HTMLElement;
   hud?: HTMLElement;
+  reminder?: HTMLElement;
+  reminderHandle?: { moveTo(x: number, y: number): void; getPosition(): { x: number; y: number } };
+  reminderGeometryKey?: string;
+  readonly savedFloatPositions = new Map<string, { x: number; y: number }>();
   selectionReads = 0;
   teardown?: () => void;
 
@@ -66,7 +70,7 @@ class FrontendHost {
       },
       ready() {},
       dom: { addStyle: () => () => {} },
-      events: { on: (event: string, handler: () => void) => {
+      events: { on: (event: string, handler: (payload?: unknown) => void) => {
         this.events.set(event, handler);
         return () => { this.events.delete(event); };
       } },
@@ -102,11 +106,33 @@ class FrontendHost {
             destroy: () => button.remove(),
           };
         },
-        createFloatWidget: () => {
+        createFloatWidget: (options?: { tooltip?: string; persistGeometry?: string; initialPosition?: { x: number; y: number } }) => {
           const root = document.createElement("div");
           document.body.append(root);
-          this.hud = root;
-          return { root, destroy: () => { root.remove(); if (this.hud === root) this.hud = undefined; } };
+          const key = options?.persistGeometry;
+          let position = key && this.savedFloatPositions.get(key) || options?.initialPosition || { x: 0, y: 0 };
+          const handle = {
+            root,
+            moveTo: (x: number, y: number) => {
+              position = { x, y };
+              if (key) this.savedFloatPositions.set(key, position);
+            },
+            getPosition: () => ({ ...position }),
+            destroy: () => {
+            root.remove();
+            if (this.hud === root) this.hud = undefined;
+            if (this.reminder === root) {
+              this.reminder = undefined;
+              this.reminderHandle = undefined;
+            }
+          },
+          };
+          if (options?.tooltip === "Waypoints chat reminder") {
+            this.reminder = root;
+            this.reminderHandle = handle;
+            this.reminderGeometryKey = key;
+          } else this.hud = root;
+          return handle;
         },
         showModal: () => {
           const root = document.createElement("div");
@@ -214,14 +240,14 @@ describe("frontend character switching", () => {
     expect(host.drawer.textContent).not.toContain("Ada");
 
     for (const [action, click] of [
-      ["set-enabled", () => host!.button("ON", host!.hud!).click()],
+      ["set-chat-enabled", () => host!.button("ON", host!.hud!).click()],
       ["force", () => host!.button("Force").click()],
       ["undo", () => host!.extras.get("undo-waypoints")!.click()],
     ] as const) {
       click();
       const request = host.request(action);
       expect(request.input.chatId).toBe("chat-b");
-      if (action === "set-enabled") expect(request.input.characterId).toBe("b");
+      if (action === "set-chat-enabled") expect(request.input.enabled).toBe(false);
       host.reply(request);
       await host.finishRefreshes();
       expect(host.button("Force").disabled).toBe(false);
@@ -233,6 +259,107 @@ describe("frontend character switching", () => {
     expect(host.request("force").input.chatId).toBe("chat-b");
     host.reply(host.request("force"));
     await host.finishRefreshes();
+  });
+
+  test("offers five seconds on an existing chat and dismisses immediately after No", async () => {
+    host = new FrontendHost();
+    await host.finishRefreshes();
+    expect(host.reminder).toBeUndefined();
+    host.switchTo("chat-b", "b");
+    await host.finishRefreshes();
+    expect(host.reminder?.textContent).toContain("5s");
+    expect(host.reminder?.textContent).toContain("Waypoints is active");
+    host.button("No", host.reminder!).click();
+    expect(host.reminder).toBeUndefined();
+    expect(host.request("set-chat-enabled").input).toEqual({ chatId: "chat-b", enabled: false });
+    host.reply(host.request("set-chat-enabled"));
+    await host.finishRefreshes();
+    await Bun.sleep(70);
+    expect(host.requests.filter((request) => request.action === "set-chat-enabled")).toHaveLength(1);
+  });
+
+  test("gives a newly created chat ten seconds, counts down, and applies the configured timeout answer", async () => {
+    host = new FrontendHost();
+    await host.finishRefreshes();
+    const originalNow = Date.now;
+    let now = originalNow();
+    Date.now = () => now;
+    try {
+      host.events.get("CHAT_CREATED")?.({ id: "chat-b" });
+      host.switchTo("chat-b", "b");
+      const refresh = host.request("refresh");
+      const next = status("chat-b");
+      next.settings.reminderTimeoutAction = "no";
+      host.reply(refresh, next);
+      await flush();
+      expect(host.reminder?.textContent).toContain("10s");
+      const progress = host.reminder!.querySelector<HTMLElement>(".wp-reminder-progress")!;
+      now += 4_000;
+      await Bun.sleep(70);
+      expect(host.reminder?.textContent).toContain("6s");
+      expect(progress.style.transform).toBe("scaleX(0.6)");
+      now += 6_000;
+      await Bun.sleep(70);
+      expect(host.reminder).toBeUndefined();
+      expect(host.request("set-chat-enabled").input).toEqual({ chatId: "chat-b", enabled: false });
+      host.reply(host.request("set-chat-enabled"));
+      await host.finishRefreshes();
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  test("defaults to Yes at timeout and respects the reminder setting", async () => {
+    host = new FrontendHost();
+    await host.finishRefreshes();
+    const originalNow = Date.now;
+    let now = originalNow();
+    Date.now = () => now;
+    try {
+      host.switchTo("chat-b", "b");
+      await host.finishRefreshes();
+      now += 5_000;
+      await Bun.sleep(70);
+      expect(host.reminder).toBeUndefined();
+      expect(host.request("set-chat-enabled").input).toEqual({ chatId: "chat-b", enabled: true });
+      host.reply(host.request("set-chat-enabled"));
+      await host.finishRefreshes();
+      host.switchTo("chat-a", "a");
+      const refresh = host.request("refresh");
+      const next = status("chat-a");
+      next.settings.reminderToast = false;
+      host.reply(refresh, next);
+      await flush();
+      expect(host.reminder).toBeUndefined();
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  test("cancels the old reminder on chat switch and never applies its answer to another chat", async () => {
+    host = new FrontendHost();
+    await host.finishRefreshes();
+    host.switchTo("chat-b", "b");
+    await host.finishRefreshes();
+    const oldYes = host.button("Yes", host.reminder!);
+    host.switchTo("chat-a", "a");
+    expect(host.reminder).toBeUndefined();
+    oldYes.click();
+    expect(host.requests.some((request) => request.action === "set-chat-enabled")).toBe(false);
+    await host.finishRefreshes();
+    expect(host.reminder?.textContent).toContain("5s");
+  });
+
+  test("restores the dragged reminder position on the next chat", async () => {
+    host = new FrontendHost();
+    await host.finishRefreshes();
+    host.switchTo("chat-b", "b");
+    await host.finishRefreshes();
+    expect(host.reminderGeometryKey).toBe("chat-reminder");
+    host.reminderHandle!.moveTo(192, 224);
+    host.switchTo("chat-a", "a");
+    await host.finishRefreshes();
+    expect(host.reminderHandle?.getPosition()).toEqual({ x: 192, y: 224 });
   });
 
   test("a switch during startup loads immediately and ignores a late reply from the previous chat", async () => {

@@ -146,6 +146,17 @@ class FakeLumiverse {
 }
 
 describe("WaypointEngine prompt and processor", () => {
+  test("a chat-level No pauses prompt and Loom guidance until Yes restores it", async () => {
+    const host = new FakeLumiverse();
+    const engine = new WaypointEngine(host.api);
+    expect((await engine.view("chat")).chatEnabled).toBe(true);
+    await engine.setChatEnabled("chat", false);
+    expect(host.state().chatEnabled).toBe(false);
+    expect((await engine.view("chat")).status).toBe("Waypoints is off for this chat.");
+    expect((await engine.loomValues("chat")).active).toBe(false);
+    await engine.setChatEnabled("chat", true);
+    expect((await engine.loomValues("chat")).active).toBe(true);
+  });
   test("an explicit empty frontend selection never falls back to the backend's previous chat", async () => {
     const host = new FakeLumiverse();
     const engine = new WaypointEngine(host.api);

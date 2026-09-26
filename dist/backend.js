@@ -40,6 +40,8 @@ var DEFAULT_SETTINGS = {
   diagnosticLogging: true,
   diagnosticLineLimit: 96,
   floatingControls: true,
+  reminderToast: true,
+  reminderTimeoutAction: "yes",
   actionBarButton: true,
   extrasActions: true
 };
@@ -104,6 +106,15 @@ function readRole(input, issues) {
     return DEFAULT_SETTINGS.promptRole;
   }
   return value;
+}
+function readReminderTimeoutAction(input, issues) {
+  const value = input.reminderTimeoutAction;
+  if (value === undefined)
+    return DEFAULT_SETTINGS.reminderTimeoutAction;
+  if (value === "yes" || value === "no")
+    return value;
+  issues.push({ field: "reminderTimeoutAction", message: "Reminder timeout action must be Yes or No." });
+  return DEFAULT_SETTINGS.reminderTimeoutAction;
 }
 function validateTagName(value) {
   return TAG_NAME.test(value);
@@ -222,6 +233,8 @@ function validateSettings(input) {
     diagnosticLogging: readBoolean(source, "diagnosticLogging", DEFAULT_SETTINGS.diagnosticLogging, issues),
     diagnosticLineLimit: readInteger(source, "diagnosticLineLimit", DEFAULT_SETTINGS.diagnosticLineLimit, 10, 500, issues),
     floatingControls: readBoolean(source, "floatingControls", DEFAULT_SETTINGS.floatingControls, issues),
+    reminderToast: readBoolean(source, "reminderToast", DEFAULT_SETTINGS.reminderToast, issues),
+    reminderTimeoutAction: readReminderTimeoutAction(source, issues),
     actionBarButton: readBoolean(source, "actionBarButton", DEFAULT_SETTINGS.actionBarButton, issues),
     extrasActions: readBoolean(source, "extrasActions", DEFAULT_SETTINGS.extrasActions, issues)
   };
@@ -376,6 +389,7 @@ function pendingFrom(value) {
 function emptyChatState() {
   return {
     version: 1,
+    chatEnabled: true,
     active: null,
     upcoming: null,
     groupEnabledByCharacter: {},
@@ -399,6 +413,7 @@ function parseChatState(value) {
     }
     return {
       version: 1,
+      chatEnabled: parsed.chatEnabled !== false,
       active: selectionFrom(parsed.active),
       upcoming: selectionFrom(parsed.upcoming),
       groupEnabledByCharacter,
@@ -714,7 +729,7 @@ class WaypointEngine {
     return !isRecord3(extensionData) || extensionData.enabled !== false;
   }
   isSelectionEnabled(context, state, selection) {
-    return selection !== null && this.isCharacterEnabled(context, state, selection.characterId);
+    return state.chatEnabled && selection !== null && this.isCharacterEnabled(context, state, selection.characterId);
   }
   promptStatus(context, state, settings) {
     const upcoming = greetingForSelection(context.greetings, state.upcoming);
@@ -735,7 +750,7 @@ class WaypointEngine {
         role: settings.promptRole,
         insertionDepth: settings.insertionDepth,
         content: "",
-        reason: "The upcoming greeting's character is turned off."
+        reason: state.chatEnabled ? "The upcoming greeting's character is turned off." : "Waypoints is off for this chat."
       };
     }
     const rendered = renderPrompt(settings, upcoming.text);
@@ -826,7 +841,7 @@ class WaypointEngine {
     if (!greeting)
       return { advanced: false, reason: "The selected upcoming greeting no longer exists." };
     if (!this.isSelectionEnabled(context, state, target)) {
-      return { advanced: false, reason: "The upcoming greeting's character is turned off." };
+      return { advanced: false, reason: state.chatEnabled ? "The upcoming greeting's character is turned off." : "Waypoints is off for this chat." };
     }
     const journal = {
       id: journalId(),
@@ -936,6 +951,8 @@ class WaypointEngine {
       const context = await this.context(signal.chatId);
       const state = reconcileChatState(await this.state(signal.chatId), context);
       await this.reconcileJournalLocked(signal.chatId, state, context, settings);
+      if (!state.chatEnabled)
+        return { advanced: false, reason: "Waypoints is off for this chat." };
       if (state.recentTransitionKeys.includes(signal.eventKey)) {
         return { advanced: false, reason: "This handoff was already processed." };
       }
@@ -1065,6 +1082,18 @@ class WaypointEngine {
       this.note("enabled state changed for " + characterId);
     });
   }
+  async setChatEnabled(chatId, enabled) {
+    this.assertPermissions(CONTEXT_PERMISSIONS, "Changing this chat's Waypoints state");
+    await this.serial(chatId, async () => {
+      const context = await this.context(chatId);
+      const state = reconcileChatState(await this.state(chatId), context);
+      state.chatEnabled = enabled;
+      if (!enabled)
+        state.pendingHandoffs = [];
+      await this.persistState(chatId, state);
+      this.note("chat " + chatId + " Waypoints " + (enabled ? "enabled" : "disabled"));
+    });
+  }
   async intercept(messages, chatId) {
     try {
       const settings = await this.settings();
@@ -1153,6 +1182,7 @@ class WaypointEngine {
     if (this.missingPermissions(CONTEXT_PERMISSIONS).length) {
       return {
         chatId: null,
+        chatEnabled: true,
         isGroupChat: false,
         grantedPermissions,
         characters: [],
@@ -1178,6 +1208,7 @@ class WaypointEngine {
     if (!resolvedChatId) {
       return {
         chatId: null,
+        chatEnabled: true,
         isGroupChat: false,
         grantedPermissions,
         characters: [],
@@ -1207,9 +1238,10 @@ class WaypointEngine {
       const active = greetingForSelection(context.greetings, state.active);
       const upcoming = greetingForSelection(context.greetings, state.upcoming);
       const canUndo = this.api.permissions.has("chat_mutation") ? Boolean(await this.latestInsertedGreeting(resolvedChatId).catch(() => null)) : false;
-      const status = !state.upcoming ? "No upcoming greeting is selected." : !this.isSelectionEnabled(context, state, state.upcoming) ? "The selected upcoming character is turned off." : "Ready: " + upcoming?.characterName + " greeting " + String((upcoming?.greetingIndex ?? 0) + 1) + ".";
+      const status = !state.chatEnabled ? "Waypoints is off for this chat." : !state.upcoming ? "No upcoming greeting is selected." : !this.isSelectionEnabled(context, state, state.upcoming) ? "The selected upcoming character is turned off." : "Ready: " + upcoming?.characterName + " greeting " + String((upcoming?.greetingIndex ?? 0) + 1) + ".";
       return {
         chatId: resolvedChatId,
+        chatEnabled: state.chatEnabled,
         isGroupChat: context.isGroupChat,
         grantedPermissions,
         characters: context.characters.map((character) => ({
@@ -1441,6 +1473,12 @@ async function handleRequest(raw, userId) {
           throw new Error("Choose a character and an enabled state.");
         }
         await current.setEnabled(selectedChatId, input.characterId, input.enabled);
+        result = await current.view(selectedChatId);
+        break;
+      case "set-chat-enabled":
+        if (!selectedChatId || typeof input.enabled !== "boolean")
+          throw new Error("Choose a chat and an enabled state.");
+        await current.setChatEnabled(selectedChatId, input.enabled);
         result = await current.view(selectedChatId);
         break;
       case "force":
