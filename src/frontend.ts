@@ -71,6 +71,7 @@ function compactPreview(value: string, limit = 580): string {
   return value.length > limit ? value.slice(0, limit) + "…" : value;
 }
 
+const WAYPOINTS_FLAG_ICON = "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" aria-hidden=\"true\"><path d=\"M5 19V5m0 0 11 3-3 5 6 2-3 5-11-3\"/><circle cx=\"5\" cy=\"5\" r=\"1.5\"/></svg>";
 const WAYPOINTS_COMPASS_ICON = "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"8.5\"/><path d=\"m15.5 8.5-2.7 5-5 2.7 2.7-5 5-2.7Z\"/><circle cx=\"12\" cy=\"12\" r=\"1\" fill=\"currentColor\" stroke=\"none\"/></svg>";
 
 export function setup(ctx: SpindleFrontendContext): () => void {
@@ -81,7 +82,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     headerTitle: "Waypoints",
     description: "Guide a chat through character greetings as story waypoints",
     keywords: ["greetings", "handoff", "scene", "prompt", "waypoints"],
-    iconSvg: "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\"><path d=\"M5 19V5m0 0 11 3-3 5 6 2-3 5-11-3\"/><circle cx=\"5\" cy=\"5\" r=\"1.5\"/></svg>",
+    iconSvg: WAYPOINTS_FLAG_ICON,
   });
   tab.root.classList.add("wp-mount");
   const root = element("div", "wp-root");
@@ -97,7 +98,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   const actionBarButton = actionBarMount ? element("button", "wp-action-bar-button") : null;
   if (actionBarButton && actionBarMount) {
     actionBarButton.type = "button";
-    actionBarButton.innerHTML = WAYPOINTS_COMPASS_ICON;
+    actionBarButton.innerHTML = WAYPOINTS_FLAG_ICON;
     actionBarButton.title = "Waypoints controls";
     actionBarButton.setAttribute("aria-label", "Waypoints controls");
     actionBarButton.hidden = true;

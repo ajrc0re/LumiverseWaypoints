@@ -6,7 +6,6 @@ var DEFAULT_PROMPT_TEMPLATE = [
   "<shape_scene_direction>",
   "- DIRECTION TARGET: Treat the upcoming prewritten scene as a long-term destination. Gradually shape the narrative's setting, character positions, emotional state, and momentum so the scene can begin naturally and immediately afterward. Do not force a fade-out or make the guidance visible.",
   "- PACING AND HANDOFF: Reach the scene slowly over multiple turns. Continue the present narrative until its required conditions feel earned, rather than transitioning at the first plausible opportunity. Favor gradual progression toward the handoff point over immediate scene setup.",
-  "- NARRATIVE SPACING MINIMUMS: Avoid placing major transitions or prewritten handoffs on the same day or on consecutive days. Unless the next scene is explicitly required to occur that day, allow at least one or two in-story days to pass before guiding the narrative toward it. If a handoff has already occurred that day, continue the story naturally without setting up another.",
   "- LATE HANDOFF POLICY: Continue the current narrative naturally until it reaches the doorstep of the upcoming prewritten scene. Move toward that point gradually across several turns without forcing a bridge or rushing the required setup. Trigger the handoff at the latest viable moment, ideally immediately before the scene begins. Do not hand off merely because of a calm pause, completed emotional beat, natural stopping point, fade-out, summary, chapter break, or other convenient ending.",
   "- VALID HANDOFF THRESHOLD: Hand off only when the narrative has reached the immediate starting point of the upcoming prewritten scene. The next assistant reply must be able to begin that scene without additional setup, explanation, bridging, or character repositioning. If the current narrative can still progress naturally toward that point, continue instead. When uncertain, delay the handoff and move closer at a normal pace. Never use a large time skip solely to reach the threshold faster.",
   "- USER INJECTION OVERRIDE TAG: If the user's latest reply contains {{override_tag}}, override the normal pacing rules and use the next response to make a best-effort transition toward the handoff threshold. Force the narrative into the closest viable starting position for the upcoming prewritten scene, using only as much bridging, repositioning, or time progression as necessary. The following assistant response must include {{handoff_tag}} exactly once, even if the threshold could not be reached perfectly.",
@@ -22,7 +21,7 @@ var DEFAULT_PROMPT_TEMPLATE = [
 var DEFAULT_SETTINGS = {
   promptTemplate: DEFAULT_PROMPT_TEMPLATE,
   prewrittenSceneCharLimit: 2000,
-  promptExcludeRegex: "",
+  promptExcludeRegex: "/[ \\t]*(?:\\r?\\n)?[ \\t]*(?:<\\/?(?:div|span|img)\\b[^>]*>|<!--[\\s\\S]*?-->)[ \\t]*/gi",
   autoPrompt: false,
   insertionDepth: 0,
   promptRole: "system",
@@ -395,6 +394,7 @@ function greetingLabel(greeting) {
 function compactPreview(value, limit = 580) {
   return value.length > limit ? value.slice(0, limit) + "…" : value;
 }
+var WAYPOINTS_FLAG_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 19V5m0 0 11 3-3 5 6 2-3 5-11-3"/><circle cx="5" cy="5" r="1.5"/></svg>';
 var WAYPOINTS_COMPASS_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="m15.5 8.5-2.7 5-5 2.7 2.7-5 5-2.7Z"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/></svg>';
 function setup(ctx) {
   const tab = ctx.ui.registerDrawerTab({
@@ -404,7 +404,7 @@ function setup(ctx) {
     headerTitle: "Waypoints",
     description: "Guide a chat through character greetings as story waypoints",
     keywords: ["greetings", "handoff", "scene", "prompt", "waypoints"],
-    iconSvg: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 19V5m0 0 11 3-3 5 6 2-3 5-11-3"/><circle cx="5" cy="5" r="1.5"/></svg>'
+    iconSvg: WAYPOINTS_FLAG_ICON
   });
   tab.root.classList.add("wp-mount");
   const root = element("div", "wp-root");
@@ -420,7 +420,7 @@ function setup(ctx) {
   const actionBarButton = actionBarMount ? element("button", "wp-action-bar-button") : null;
   if (actionBarButton && actionBarMount) {
     actionBarButton.type = "button";
-    actionBarButton.innerHTML = WAYPOINTS_COMPASS_ICON;
+    actionBarButton.innerHTML = WAYPOINTS_FLAG_ICON;
     actionBarButton.title = "Waypoints controls";
     actionBarButton.setAttribute("aria-label", "Waypoints controls");
     actionBarButton.hidden = true;
