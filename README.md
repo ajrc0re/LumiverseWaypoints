@@ -1,3 +1,5 @@
+![](assets/art-banner.png)
+
 # Waypoints
 
 Waypoints turns a character card's greetings into intentional story destinations. It privately shows the next greeting to the model as scene-shaping guidance, waits for the model to emit a configurable handoff tag, removes that tag before the response is stored or displayed, and then inserts the selected greeting as the next assistant message.
