@@ -1299,6 +1299,14 @@ function setup(ctx) {
     loomHelp.append(element("pre", "wp-preview", `{{if::{{waypoints_active}}}}
 {{waypoints_content}}
 {{/if}}`));
+    loomHelp.append(element("p", "wp-help", "If you are using a preset with a COT, you can use this alternate version to add a small snippet into a variable, then use that variable in the COT."));
+    loomHelp.append(element("pre", "wp-preview", `{{if::{{waypoints_active}}}}
+{{waypoints_content}}
+{{setvar::shape_scene_direction::Shape Scene Direction: Ensure strict adherence to the <shape_scene_direction> instructions by slowly shaping the narrative towards the doorstep of the next prewritten scene. Decide if allowing the narrative to progress naturally OR if shaping the narrative towards the upcoming scene. Then, list the decision result, justification, and if shaping, what items of influence are being included.}}
+{{else}}
+{{deletevar::shape_scene_direction}}
+{{/if}}`));
+    loomHelp.append(element("p", "wp-help", "Then simply call the variable using {{getvar::shape_scene_direction}} where ever it would be relevant in your COT prompt. The variable will clear itself out when waypoints is not active, so always leave the prompt enabled in your preset."));
     loomHelp.append(element("p", "wp-help", "Pre-run council tools can also use {{altMessage1}}, {{altMessage2}}, and so on for this character's alternate greetings. {{altMessages}} returns them as a JSON array; the standard {{firstMessage}} is separate. Higher altMessage indices are unregistered when switching to a character with fewer alternate greetings. {{nextMessages}} returns the choices offered by Waypoints' next-greeting picker (only later greetings in solo chats). {{currentMessage}} and {{nextMessage}} return the selected current and upcoming greetings."));
     settings.append(loomHelp);
     settings.append(element("div", "wp-divider"));

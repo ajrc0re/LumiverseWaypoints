@@ -4,22 +4,18 @@
 
 Waypoints turns a character card's greetings into intentional story destinations. It privately shows the next greeting to the model as scene-shaping guidance, waits for the model to emit a configurable handoff tag, removes that tag before the response is stored or displayed, and then inserts the selected greeting as the next assistant message.
 
-It is a clean Lumiverse extension, not a migration layer for Greeting Inspector. It never reads or imports `GreetingInspector*` chat variables.
-
 ## Install
 
-Waypoints requires Lumiverse 1.2.0 or newer and Bun.
+Waypoints requires Lumiverse 1.2.0 or newer.
 
-1. Disable the old **Greeting Inspector** LumiScript before enabling Waypoints. Leaving both active can cause two handoff handlers to react to one tag.
-2. From this repository, run:
+### Install from the Lumiverse extensions panel
 
-   ```powershell
-   bun install
-   bun run build
+1. Open the **Extensions** panel in Lumiverse.
+2. Install a new extension from this repository URL:
+   ```text
+   https://github.com/ajrc0re/LumiverseWaypoints
    ```
-
-3. Install the repository folder as `lumiverse_waypoints` in Lumiverse's extensions directory (or install it with the Lumiverse extension UI). Its root must contain `spindle.json` and the built `dist/backend.js` and `dist/frontend.js`.
-4. Enable Waypoints in Lumiverse and grant:
+3. Enable Waypoints and grant:
    - `characters`
    - `chats`
    - `chat_mutation`
@@ -27,7 +23,20 @@ Waypoints requires Lumiverse 1.2.0 or newer and Bun.
    - `generation`
    - `ui_panels`
 
-The drawer works without `ui_panels`; that grant only enables the optional floating controls. If a grant needed for automatic transitions is absent, the drawer reports exactly which grants are missing.
+The repository ships the built `dist/backend.js` and `dist/frontend.js`, so no build step is needed. The drawer works without `ui_panels`; that grant only enables the optional floating controls. If a grant needed for automatic transitions is absent, the drawer reports exactly which grants are missing.
+
+### Manual install for developers
+
+1. Clone the repository.
+2. From the repository root, run:
+
+   ```powershell
+   bun install
+   bun run build
+   ```
+
+3. Install the repository folder as `lumiverse_waypoints` in Lumiverse's extensions directory. Its root must contain `spindle.json` and the built `dist/backend.js` and `dist/frontend.js`.
+4. Enable Waypoints in Lumiverse and grant the permissions listed above.
 
 ## Using Waypoints
 
@@ -70,19 +79,38 @@ The default full scene-shaping template is editable. It supports:
 | `{{handoff_tag}}` | The current self-closing handoff tag. Required. |
 | `{{override_tag}}` | The current `--name--` user override marker. Recommended; Waypoints warns if omitted. |
 
-The exclusion regex runs before the excerpt is truncated. It accepts JavaScript-style literals such as `/private note/gi` and the old LumiScript-style `x` flag, which ignores unescaped whitespace and `#` comments outside character classes.
+The exclusion regex runs before the excerpt is truncated. It accepts JavaScript-style literals such as `/private note/gi`, plus an `x` flag that ignores unescaped whitespace and `#` comments outside character classes.
 
 You can also configure the prompt role, insertion depth (`0` is the newest edge), and whether automatic prompt insertion is enabled.
 
 ### Loom preset injection
 
-If you prefer Loom to place the guidance, leave **Auto-prompt** off and put this in the appropriate Loom prompt block:
+#### Simple prompt macro
+
+If you prefer a Loom preset prompt to place the guidance, leave **Auto-prompt** off and put this in the appropriate Loom prompt block:
 
 ```text
 {{if::{{waypoints_active}}}}
 {{waypoints_content}}
 {{/if}}
 ```
+
+#### Prompt macro with COT variable
+
+If you are using a preset with a COT, you can use this alternate version to add a small snippet into a variable, then use that variable in the COT.
+
+```text
+{{if::{{waypoints_active}}}}
+{{waypoints_content}}
+{{setvar::shape_scene_direction::Shape Scene Direction: Ensure strict adherence to the <shape_scene_direction> instructions by slowly shaping the narrative towards the doorstep of the next prewritten scene. Decide if allowing the narrative to progress naturally OR if shaping the narrative towards the upcoming scene. Then, list the decision result, justification, and if shaping, what items of influence are being included.}}
+{{else}}
+{{deletevar::shape_scene_direction}}
+{{/if}}
+```
+
+Then simply call the variable using `{{getvar::shape_scene_direction}}` whereever it would be relevant in your COT prompt. The variable will clear itself out when waypoints is not active, so always leave the prompt enabled in your preset.
+
+---
 
 `{{waypoints_active}}` returns `true` only when the selected Waypoints path is enabled and has a renderable upcoming scene. `{{waypoints_content}}` returns that same rendered scene prompt. These are Waypoints extension macros, not local variables, so use them without a leading `.`. The Loom block controls placement and role; Waypoints' automatic-insertion role and depth apply only when **Auto-prompt** is on. Do not enable both paths unless you intentionally want the guidance twice.
 
@@ -103,7 +131,7 @@ The **Interface** section also controls two input-bar surfaces, both enabled by 
 - **Compass button** mounts a compact Waypoints compass beside Lumiverse's native action-bar buttons above the input. Its themed menu contains the chat-level Toggle, Choose current greeting, Choose next greeting, Force, Undo, and Open Waypoints drawer.
 - **Extras actions** adds the chat-level Toggle, Choose current greeting, Choose next greeting, Undo, and Force entries to Lumiverse's native **Extras** popover under the Waypoints extension heading.
 
-The two greeting-choice actions open a full-size picker modeled on Greeting Inspector: choose from the available greetings, inspect a large scrollable preview, then confirm with **Use current greeting** or **Use next greeting**. In solo chats, next-greeting choices stay later in the active character's greeting sequence. In group chats, next-greeting choices include every member's greeting except the current one.
+The two greeting-choice actions open a full-size picker: choose from the available greetings, inspect a large scrollable preview, then confirm with **Use current greeting** or **Use next greeting**. In solo chats, next-greeting choices stay later in the active character's greeting sequence. In group chats, next-greeting choices include every member's greeting except the current one.
 
 These surfaces are independent of the floating widget. They do not require another permission; the actions still report missing `characters`, `chats`, or `chat_mutation` grants when an operation needs them. The host owns the Quick Replies, Tools, and Extras categories, so Waypoints cannot add native entries directly to Quick Replies or Tools or create another host category.
 
@@ -117,11 +145,11 @@ Undo is intentionally narrow: it only deletes the most recent assistant message 
 
 ## Known boundaries
 
-- Waypoints does not import prior Greeting Inspector state. Start by selecting the active and upcoming greetings in its drawer.
+- Waypoints keeps all of its state in its own extension data. Start by selecting the active and upcoming greetings in its drawer.
 - Handoff tags are control signals, not a general scene-end marker. A tag has to be emitted for an automatic insertion; a stopped generation can still advance only if its partial content contains the tag.
 - If a greeting is edited or removed from a character card, Waypoints reconciles stale selections to the next valid greeting. Check the drawer after card edits.
 - The prompt is private guidance, not a copy mechanism. The default template explicitly tells the model not to quote or reproduce the upcoming greeting before handoff.
-- A paired handoff tag and all of its contents are stripped, matching the original Greeting Inspector behavior.
+- A paired handoff tag and all of its contents are stripped before the message is stored or displayed.
 
 ## Development
 
