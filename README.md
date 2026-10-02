@@ -65,27 +65,9 @@ The default user override marker is:
 
 The scene-shaping prompt tells the model to make a best-effort transition when that marker appears in the user's latest reply.
 
-## Settings
+## Prompts
 
-The drawer's **Settings** tab keeps an editable draft. Changes do not affect a live generation while you type; Waypoints validates the complete draft and saves one settings object only after you select **Save settings**.
-
-### Prompt
-
-The default full scene-shaping template is editable. It supports:
-
-| Placeholder | Meaning |
-| --- | --- |
-| `{{scene_excerpt}}` | The next greeting after exclusion filtering and the configured character limit. Required. |
-| `{{handoff_tag}}` | The current self-closing handoff tag. Required. |
-| `{{override_tag}}` | The current `--name--` user override marker. Recommended; Waypoints warns if omitted. |
-
-The exclusion regex runs before the excerpt is truncated. It accepts JavaScript-style literals such as `/private note/gi`, plus an `x` flag that ignores unescaped whitespace and `#` comments outside character classes.
-
-You can also configure the prompt role, insertion depth (`0` is the newest edge), and whether automatic prompt insertion is enabled.
-
-### Loom preset injection
-
-#### Simple prompt macro
+### Simple prompt macro
 
 If you prefer a Loom preset prompt to place the guidance, leave **Auto-prompt** off and put this in the appropriate Loom prompt block:
 
@@ -95,7 +77,7 @@ If you prefer a Loom preset prompt to place the guidance, leave **Auto-prompt** 
 {{/if}}
 ```
 
-#### Prompt macro with COT variable
+### Prompt macro with COT variable
 
 If you are using a preset with a COT, you can use this alternate version to add a small snippet into a variable, then use that variable in the COT.
 
@@ -118,9 +100,27 @@ Pre-run council tools can also use `{{altMessage1}}`, `{{altMessage2}}`, and hig
 
 `{{nextMessages}}` returns the greetings offered by Waypoints' **Next greeting** picker as a JSON array. In solo chats, that means only greetings after the current greeting; in group chats, it matches the picker by including the other members' greetings and excluding the current selection. `{{currentMessage}}` and `{{nextMessage}}` return the configured current and upcoming greeting text, respectively.
 
-### Handoff and advanced behavior
+## Settings
+
+The drawer's **Settings** tab keeps an editable draft. Changes do not affect a live generation while you type; Waypoints validates the complete draft and saves one settings object only after you select **Save settings**.
+
+### Prompt
+
+The default full scene-shaping template is editable. It supports:
+
+| Placeholder | Meaning |
+| --- | --- |
+| `{{scene_excerpt}}` | The next greeting after exclusion filtering and the configured character limit. Required. |
+| `{{handoff_tag}}` | The current self-closing handoff tag. Required. |
+| `{{override_tag}}` | The current `--name--` user override marker. Recommended; Waypoints warns if omitted. |
+
+The exclusion regex runs before the excerpt is truncated. It accepts JavaScript-style literals such as `/private note/gi`, plus an `x` flag that ignores unescaped whitespace and `#` comments outside character classes.
+
+You can also configure the prompt role, insertion depth (`0` is the newest edge), and whether automatic prompt insertion is enabled.
 
 The handoff tag name and override marker are validated before save. Advanced settings expose interceptor/content-processor priority, chat and handoff-read retries, retry delay, pending-handoff and dedupe-journal limits, and diagnostic retention.
+
+### Interface additions
 
 The optional floating ON / Undo / Force control is enabled by default. Lumiverse owns its drag position and reset behavior; Waypoints does not persist a competing position.
 
@@ -135,7 +135,9 @@ The two greeting-choice actions open a full-size picker: choose from the availab
 
 These surfaces are independent of the floating widget. They do not require another permission; the actions still report missing `characters`, `chats`, or `chat_mutation` grants when an operation needs them. The host owns the Quick Replies, Tools, and Extras categories, so Waypoints cannot add native entries directly to Quick Replies or Tools or create another host category.
 
-## Safety and recovery
+## Advanced behavior
+
+### Safety and recovery
 
 Before appending a greeting, Waypoints stores a persistent per-chat journal. The inserted assistant message is stamped with journal and selection metadata. On duplicate lifecycle events or a worker restart, Waypoints checks for that stamped message before it inserts again. This avoids double advancement while retaining recovery after an append succeeds just before the worker is interrupted.
 
@@ -143,7 +145,7 @@ Handoffs are tied to a specific saved assistant reply and swipe, using the conte
 
 Undo is intentionally narrow: it only deletes the most recent assistant message carrying Waypoints' own insertion metadata. It never decides from matching text, proximity, or a user message, so it will not remove an unrelated user-authored message.
 
-## Known boundaries
+### Known boundaries
 
 - Waypoints keeps all of its state in its own extension data. Start by selecting the active and upcoming greetings in its drawer.
 - Handoff tags are control signals, not a general scene-end marker. A tag has to be emitted for an automatic insertion; a stopped generation can still advance only if its partial content contains the tag.
@@ -151,7 +153,7 @@ Undo is intentionally narrow: it only deletes the most recent assistant message 
 - The prompt is private guidance, not a copy mechanism. The default template explicitly tells the model not to quote or reproduce the upcoming greeting before handoff.
 - A paired handoff tag and all of its contents are stripped before the message is stored or displayed.
 
-## Development
+### Development
 
 ```powershell
 bun run typecheck
