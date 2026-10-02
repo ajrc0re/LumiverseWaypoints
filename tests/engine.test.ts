@@ -157,6 +157,18 @@ describe("WaypointEngine prompt and processor", () => {
     await engine.setChatEnabled("chat", true);
     expect((await engine.loomValues("chat")).active).toBe(true);
   });
+  test("a chat without alternate greetings stays off and unwritten until one is added", async () => {
+    const host = new FakeLumiverse(1);
+    const engine = new WaypointEngine(host.api);
+    const view = await engine.view("chat");
+    expect(view.chatEnabled).toBe(false);
+    expect(view.status).toBe("This chat has no alternate greetings, so Waypoints stays off.");
+    expect(host.variables.size).toBe(0);
+    await expect(engine.setChatEnabled("chat", true)).rejects.toThrow("This chat has no alternate greetings for Waypoints to cycle.");
+    expect(host.variables.size).toBe(0);
+    host.characters.get("a")!.alternate_greetings = ["Greeting 2"];
+    expect((await engine.view("chat")).chatEnabled).toBe(true);
+  });
   test("an explicit empty frontend selection never falls back to the backend's previous chat", async () => {
     const host = new FakeLumiverse();
     const engine = new WaypointEngine(host.api);

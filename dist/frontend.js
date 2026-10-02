@@ -547,7 +547,9 @@ function setup(ctx) {
       return;
     const chatId = pendingReminderChatId;
     pendingReminderChatId = null;
-    if (!view.settings.reminderToast || !view.grantedPermissions.includes("ui_panels") || !view.greetings.length)
+    if (!view.chatEnabled)
+      return;
+    if (!view.settings.reminderToast || !view.grantedPermissions.includes("ui_panels"))
       return;
     const createdAt = createdChatIds.get(chatId);
     createdChatIds.delete(chatId);
@@ -572,7 +574,7 @@ function setup(ctx) {
     const version = selectionVersion;
     const card = element("div", "wp-reminder-card");
     card.setAttribute("role", "status");
-    card.append(element("div", "wp-reminder-title", view.chatEnabled ? "Waypoints is active" : "Waypoints is off"));
+    card.append(element("div", "wp-reminder-title", "Waypoints is active"));
     card.append(element("div", "wp-reminder-copy", "Use Waypoints for this chat?"));
     const actions = element("div", "wp-reminder-actions");
     const count = element("span", "wp-reminder-count", String(durationMs / 1000) + "s");

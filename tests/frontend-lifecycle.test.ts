@@ -350,6 +350,56 @@ describe("frontend character switching", () => {
     expect(host.reminder?.textContent).toContain("5s");
   });
 
+  test("never re-asks or re-enables a chat that answered No, even mid-timer", async () => {
+    host = new FrontendHost();
+    await host.finishRefreshes();
+    // Chat B answers No and the backend reports it disabled from then on.
+    host.switchTo("chat-b", "b");
+    await host.finishRefreshes();
+    host.button("No", host.reminder!).click();
+    expect(host.request("set-chat-enabled").input).toEqual({ chatId: "chat-b", enabled: false });
+    host.reply(host.request("set-chat-enabled"));
+    const disabled = status("chat-b");
+    disabled.chatEnabled = false;
+    host.reply(host.request("refresh"), disabled);
+    await host.finishRefreshes();
+    // Switching away starts chat A's reminder; switching back to disabled chat B
+    // while that timer still runs must not show a reminder or re-enable B.
+    host.switchTo("chat-a", "a");
+    await host.finishRefreshes();
+    expect(host.reminder?.textContent).toContain("Waypoints is active");
+    host.switchTo("chat-b", "b");
+    for (const request of host.requests.filter((request) => request.action === "refresh" && !host!.answered.has(request.requestId))) {
+      const off = status("chat-b");
+      off.chatEnabled = false;
+      host.reply(request, off);
+    }
+    await flush();
+    await Bun.sleep(70);
+    expect(host.reminder).toBeUndefined();
+    expect(host.requests.filter((request) => request.action === "set-chat-enabled")).toHaveLength(1);
+  });
+
+  test("does not ask in a chat with no alternate greetings", async () => {
+    host = new FrontendHost();
+    await host.finishRefreshes();
+    host.switchTo("chat-b", "b");
+    const refresh = host.request("refresh");
+    const single = status("chat-b");
+    single.greetings = single.greetings.slice(0, 1);
+    single.chatEnabled = false;
+    single.upcoming = null;
+    single.status = "This chat has no alternate greetings, so Waypoints stays off.";
+    host.reply(refresh, single);
+    await flush();
+    await Bun.sleep(70);
+    expect(host.reminder).toBeUndefined();
+    expect(host.requests.some((request) => request.action === "set-chat-enabled")).toBe(false);
+    host.switchTo("chat-a", "a");
+    await host.finishRefreshes();
+    expect(host.reminder?.textContent).toContain("Waypoints is active");
+  });
+
   test("restores the dragged reminder position on the next chat", async () => {
     host = new FrontendHost();
     await host.finishRefreshes();

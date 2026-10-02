@@ -703,6 +703,9 @@ export class WaypointEngine {
     this.assertPermissions(CONTEXT_PERMISSIONS, "Changing this chat's Waypoints state");
     await this.serial(chatId, async () => {
       const context = await this.context(chatId);
+      if (enabled && context.greetings.length < 2) {
+        throw new Error("This chat has no alternate greetings for Waypoints to cycle.");
+      }
       const state = reconcileChatState(await this.state(chatId), context);
       state.chatEnabled = enabled;
       if (!enabled) state.pendingHandoffs = [];
@@ -867,7 +870,13 @@ export class WaypointEngine {
       const canUndo = this.api.permissions.has("chat_mutation")
         ? Boolean(await this.latestInsertedGreeting(resolvedChatId).catch(() => null))
         : false;
-      const status = !state.chatEnabled
+      // A chat with fewer than two greetings has no alternate to advance to, so
+      // Waypoints reads as off without writing state; gaining an alternate later
+      // restores the stored choice.
+      const hasGreetingChoices = context.greetings.length > 1;
+      const status = !hasGreetingChoices
+        ? "This chat has no alternate greetings, so Waypoints stays off."
+        : !state.chatEnabled
         ? "Waypoints is off for this chat."
         : !state.upcoming
         ? "No upcoming greeting is selected."
@@ -876,7 +885,7 @@ export class WaypointEngine {
           : "Ready: " + upcoming?.characterName + " greeting " + String((upcoming?.greetingIndex ?? 0) + 1) + ".";
       return {
         chatId: resolvedChatId,
-        chatEnabled: state.chatEnabled,
+        chatEnabled: state.chatEnabled && hasGreetingChoices,
         isGroupChat: context.isGroupChat,
         grantedPermissions,
         characters: context.characters.map((character) => ({

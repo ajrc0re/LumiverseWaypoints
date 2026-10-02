@@ -1085,6 +1085,9 @@ class WaypointEngine {
     this.assertPermissions(CONTEXT_PERMISSIONS, "Changing this chat's Waypoints state");
     await this.serial(chatId, async () => {
       const context = await this.context(chatId);
+      if (enabled && context.greetings.length < 2) {
+        throw new Error("This chat has no alternate greetings for Waypoints to cycle.");
+      }
       const state = reconcileChatState(await this.state(chatId), context);
       state.chatEnabled = enabled;
       if (!enabled)
@@ -1237,10 +1240,11 @@ class WaypointEngine {
       const active = greetingForSelection(context.greetings, state.active);
       const upcoming = greetingForSelection(context.greetings, state.upcoming);
       const canUndo = this.api.permissions.has("chat_mutation") ? Boolean(await this.latestInsertedGreeting(resolvedChatId).catch(() => null)) : false;
-      const status = !state.chatEnabled ? "Waypoints is off for this chat." : !state.upcoming ? "No upcoming greeting is selected." : !this.isSelectionEnabled(context, state, state.upcoming) ? "The selected upcoming character is turned off." : "Ready: " + upcoming?.characterName + " greeting " + String((upcoming?.greetingIndex ?? 0) + 1) + ".";
+      const hasGreetingChoices = context.greetings.length > 1;
+      const status = !hasGreetingChoices ? "This chat has no alternate greetings, so Waypoints stays off." : !state.chatEnabled ? "Waypoints is off for this chat." : !state.upcoming ? "No upcoming greeting is selected." : !this.isSelectionEnabled(context, state, state.upcoming) ? "The selected upcoming character is turned off." : "Ready: " + upcoming?.characterName + " greeting " + String((upcoming?.greetingIndex ?? 0) + 1) + ".";
       return {
         chatId: resolvedChatId,
-        chatEnabled: state.chatEnabled,
+        chatEnabled: state.chatEnabled && hasGreetingChoices,
         isGroupChat: context.isGroupChat,
         grantedPermissions,
         characters: context.characters.map((character) => ({

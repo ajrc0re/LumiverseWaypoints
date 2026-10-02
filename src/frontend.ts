@@ -239,7 +239,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (!view || !pendingReminderChatId || pendingReminderChatId !== view.chatId) return;
     const chatId = pendingReminderChatId;
     pendingReminderChatId = null;
-    if (!view.settings.reminderToast || !view.grantedPermissions.includes("ui_panels") || !view.greetings.length) return;
+    // Only chats with Waypoints on may ask; a chat the user turned off (or answered No for)
+    // must never be asked again or re-enabled by the timeout answer. Chats without an
+    // alternate greeting arrive with chatEnabled false for the same reason.
+    if (!view.chatEnabled) return;
+    if (!view.settings.reminderToast || !view.grantedPermissions.includes("ui_panels")) return;
     const createdAt = createdChatIds.get(chatId);
     createdChatIds.delete(chatId);
     const durationMs = createdAt !== undefined && Date.now() - createdAt < 60_000 ? 10_000 : 5_000;
@@ -265,7 +269,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const version = selectionVersion;
     const card = element("div", "wp-reminder-card");
     card.setAttribute("role", "status");
-    card.append(element("div", "wp-reminder-title", view.chatEnabled ? "Waypoints is active" : "Waypoints is off"));
+    card.append(element("div", "wp-reminder-title", "Waypoints is active"));
     card.append(element("div", "wp-reminder-copy", "Use Waypoints for this chat?"));
     const actions = element("div", "wp-reminder-actions");
     const count = element("span", "wp-reminder-count", String(durationMs / 1000) + "s");
