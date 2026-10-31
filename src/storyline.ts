@@ -146,24 +146,50 @@ export function storylinePosition(
     const position = route.indexOf(index);
     return position >= 0 ? position + 1 : null;
   };
-  return { waypoint: at(activeIndex), next: at(upcomingIndex), total: route.length };
+  const card = (index: number | null | undefined) => index === null || index === undefined ? null : index + 1;
+  return {
+    waypoint: at(activeIndex),
+    next: at(upcomingIndex),
+    total: route.length,
+    currentGreeting: card(activeIndex),
+    nextGreeting: card(upcomingIndex),
+  };
 }
 
+function waypointSpan(from: number, to: number, single: string, plural: string): string {
+  if (from > to) return "";
+  return from === to ? "Waypoint " + String(from) + " " + single : "Waypoints " + String(from) + " to " + String(to) + " " + plural;
+}
+
+/**
+ * A self-contained position statement, so a prompt reused for hundreds of
+ * turns always tells the model where in the journey the story is now.
+ */
 export function describePosition(position: StorylinePosition | null): string {
   if (!position || position.total === 0) return "";
-  const { waypoint, next, total } = position;
+  const { waypoint, next, total, currentGreeting, nextGreeting } = position;
   const of = (value: number) => String(value) + " of " + String(total);
-  if (waypoint !== null && next !== null) {
-    return "Journey position: the story is at waypoint " + of(waypoint) + "; the next waypoint is " + of(next) + ".";
+  const greeting = (value: number | null) => value === null ? "" : " (greeting " + String(value) + " on the character card)";
+  const parts: string[] = [];
+  if (waypoint !== null) {
+    parts.push("Journey position: the story is currently in prewritten waypoint " + of(waypoint) + greeting(currentGreeting) + ".");
+    const past = waypointSpan(1, waypoint - 1, "has already happened.", "have already happened.");
+    if (past) parts.push(past);
+  } else {
+    parts.push("Journey position: the current scene" + greeting(currentGreeting) + " is outside the planned route of " + String(total) + " waypoints.");
   }
-  if (waypoint !== null && waypoint === total) {
-    return "Journey position: the story has reached the final waypoint (" + of(waypoint) + "). Continue freely while keeping continuity with the overview.";
-  }
-  if (waypoint !== null) return "Journey position: the story is at waypoint " + of(waypoint) + ".";
   if (next !== null) {
-    return "Journey position: the current scene is outside the planned route; the next planned waypoint is " + of(next) + ".";
+    parts.push("The next destination is waypoint " + of(next) + greeting(nextGreeting) + "; steer toward it gradually.");
+    const ahead = waypointSpan(next + 1, total, "is still ahead after that.", "are still ahead after that.");
+    if (ahead) parts.push(ahead);
+  } else if (nextGreeting !== null) {
+    parts.push("The next prewritten scene" + greeting(nextGreeting) + " is outside the planned route.");
+  } else if (waypoint !== null && waypoint === total) {
+    parts.push("This is the final waypoint. Continue freely while keeping continuity with the overview.");
+  } else {
+    parts.push("No further prewritten scene is planned.");
   }
-  return "Journey position: the current scene is outside the planned route of " + String(total) + " waypoints.";
+  return parts.join(" ");
 }
 
 function substitute(template: string, values: Record<string, string>): string {

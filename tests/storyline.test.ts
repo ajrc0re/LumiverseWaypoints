@@ -100,10 +100,22 @@ describe("storyline routes", () => {
 });
 
 describe("storyline prompts", () => {
-  test("describes the journey position", () => {
-    expect(describePosition(storylinePosition([0, 2, 3], 2, 3))).toBe("Journey position: the story is at waypoint 2 of 3; the next waypoint is 3 of 3.");
-    expect(describePosition(storylinePosition([0, 2, 3], 3, null))).toContain("final waypoint (3 of 3)");
-    expect(describePosition(storylinePosition([0, 2, 3], 1, 0))).toContain("outside the planned route; the next planned waypoint is 1 of 3");
+  test("describes the journey position with route and card numbers", () => {
+    expect(describePosition(storylinePosition([0, 2, 3, 5], 2, 3))).toBe(
+      "Journey position: the story is currently in prewritten waypoint 2 of 4 (greeting 3 on the character card). "
+      + "Waypoint 1 has already happened. "
+      + "The next destination is waypoint 3 of 4 (greeting 4 on the character card); steer toward it gradually. "
+      + "Waypoint 4 is still ahead after that.",
+    );
+    expect(describePosition(storylinePosition([0, 1, 2, 3, 4], 3, 4))).toContain("Waypoints 1 to 3 have already happened.");
+    expect(describePosition(storylinePosition([0, 1, 2, 3, 4], 0, 1))).toContain("Waypoints 3 to 5 are still ahead after that.");
+    expect(describePosition(storylinePosition([0, 2, 3], 3, null))).toContain("This is the final waypoint.");
+    expect(describePosition(storylinePosition([0, 2, 3], 1, 0))).toBe(
+      "Journey position: the current scene (greeting 2 on the character card) is outside the planned route of 3 waypoints. "
+      + "The next destination is waypoint 1 of 3 (greeting 1 on the character card); steer toward it gradually. "
+      + "Waypoints 2 to 3 are still ahead after that.",
+    );
+    expect(describePosition(storylinePosition([0, 2], 2, 1))).toContain("The next prewritten scene (greeting 2 on the character card) is outside the planned route.");
     expect(describePosition(storylinePosition([], 0, 1))).toBe("");
   });
 
