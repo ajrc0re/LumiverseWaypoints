@@ -14,12 +14,10 @@ export const WAYPOINTS_STORYLINE_MACRO = "waypoints_storyline";
 /** Raw overview and journey-position values for writing your own Loom storyline prompt. */
 export const WAYPOINTS_STORYLINE_VALUE_MACROS: ReadonlyArray<[string, string, (values: WaypointLoomValues) => string]> = [
   ["waypoints_storyline_overview", "Returns the raw narrative overview text, without the overview template, when it is active for this chat.", (values) => values.storylineOverview],
-  ["waypoints_storyline_position", "Returns a sentence describing where the story is on the storyline route.", (values) => values.storylinePosition],
-  ["waypoints_current_waypoint", "Returns the current greeting's 1-based position on the storyline route, or nothing when it is off the route.", (values) => values.currentWaypoint],
-  ["waypoints_next_waypoint", "Returns the upcoming greeting's 1-based position on the storyline route, or nothing when it is off the route.", (values) => values.nextWaypoint],
-  ["waypoints_waypoint_count", "Returns the number of greetings on the storyline route.", (values) => values.waypointCount],
-  ["waypoints_current_greeting", "Returns the current greeting's number on the character card (1 is the first message).", (values) => values.currentGreetingNumber],
-  ["waypoints_next_greeting", "Returns the upcoming greeting's number on the character card (1 is the first message).", (values) => values.nextGreetingNumber],
+  ["waypoints_storyline_position", "Returns a sentence describing which prewritten scene the story is in and which comes next.", (values) => values.storylinePosition],
+  ["waypoints_current_waypoint", "Returns the current prewritten scene's number on the storyline, or nothing when the story is between planned scenes.", (values) => values.currentWaypoint],
+  ["waypoints_next_waypoint", "Returns the next prewritten scene's number on the storyline, or nothing when it is not a planned scene.", (values) => values.nextWaypoint],
+  ["waypoints_waypoint_count", "Returns the number of prewritten scenes on the storyline.", (values) => values.waypointCount],
 ];
 
 export interface WaypointMacroIdentity {

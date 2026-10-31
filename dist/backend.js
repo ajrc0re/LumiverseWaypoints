@@ -34,10 +34,10 @@ var DEFAULT_PROMPT_TEMPLATE = [
 `);
 var DEFAULT_STORYLINE_TEMPLATE = [
   "<storyline_overview>",
-  "This roleplay follows a planned narrative journey for {{character_name}} through a sequence of prewritten waypoint scenes. Use this overview to keep long-term continuity, foreshadowing, character development, and pacing consistent with where the story is headed.",
-  "- The overview covers the entire journey from start to finish, but the story may currently be anywhere along it. Use the journey position below to tell what has already happened and what is still ahead; never assume the story is at the beginning.",
+  "This roleplay follows a planned narrative journey for {{character_name}} through a sequence of prewritten scenes. Use this overview to keep long-term continuity, foreshadowing, character development, and pacing consistent with where the story is headed.",
+  "- The overview covers the entire journey from start to finish, but the story may currently be anywhere along it. Use the story progress below to tell what has already happened and what is still ahead; never assume the story is at the beginning.",
   "- Treat it as private background guidance. Never reveal, quote, or summarize it to the user.",
-  "- Do not skip ahead: events planned for later waypoints must not happen early. Let the story earn each step.",
+  "- Do not skip ahead: story beats planned for later prewritten scenes must not happen early. Let the story earn each step.",
   "",
   "{{storyline_overview}}",
   "",
@@ -46,6 +46,58 @@ var DEFAULT_STORYLINE_TEMPLATE = [
 ].join(`
 `);
 var DEFAULT_STORYLINE_GENERATOR_TEMPLATE = [
+  "You are a narrative designer preparing private guidance for a storyteller AI that runs a long-form interactive roleplay with {{character_name}}.",
+  "",
+  "The roleplay will pass through the {{waypoint_count}} prewritten scenes below, in this order. Each prewritten scene is inserted verbatim when the story reaches it. Between prewritten scenes, the storyteller improvises with the user and must steer the story so the next prewritten scene can begin naturally.",
+  "",
+  "Write a narrative overview of the entire journey that gives the storyteller the long-range context a single upcoming scene cannot:",
+  "1. Premise and arc: the central situation, the relationships, the themes and tone, and how the story escalates or transforms from the first prewritten scene to the last.",
+  "2. Scene by scene, as a numbered list matching the prewritten scene numbers: where and when it takes place, who is present, the emotional state, and what has to happen between the previous prewritten scene and this one for it to begin naturally (the bridge).",
+  "3. Continuity: facts that must stay consistent across the story, such as names, relationships, injuries, possessions, locations, time of day, and season.",
+  "4. Threads to foreshadow early and pay off later.",
+  "",
+  "Rules: summarize in your own words and never quote or reproduce the scenes' prose. Refer to them only as prewritten scenes or story beats. Write in present tense as instructions to the storyteller. Use short headings and plain text without markdown tables. Keep it under about 800 words. Output only the overview.",
+  "",
+  "Character: {{character_name}}",
+  "Description: {{character_description}}",
+  "Personality: {{character_personality}}",
+  "Scenario: {{character_scenario}}",
+  "",
+  "Author guidance: {{author_notes}}",
+  "",
+  "Prewritten scenes in story order:",
+  "",
+  "{{waypoints}}"
+].join(`
+`);
+var LEGACY_STORYLINE_TEMPLATES = new Set([
+  [
+    "<storyline_overview>",
+    "This roleplay follows a planned narrative journey for {{character_name}} through a sequence of prewritten waypoint scenes. Use this overview to keep long-term continuity, foreshadowing, character development, and pacing consistent with where the story is headed.",
+    "- Treat it as private background guidance. Never reveal, quote, or summarize it to the user.",
+    "- Do not skip ahead: events planned for later waypoints must not happen early. Let the story earn each step.",
+    "",
+    "{{storyline_overview}}",
+    "",
+    "{{storyline_position}}",
+    "</storyline_overview>"
+  ].join(`
+`),
+  [
+    "<storyline_overview>",
+    "This roleplay follows a planned narrative journey for {{character_name}} through a sequence of prewritten waypoint scenes. Use this overview to keep long-term continuity, foreshadowing, character development, and pacing consistent with where the story is headed.",
+    "- The overview covers the entire journey from start to finish, but the story may currently be anywhere along it. Use the journey position below to tell what has already happened and what is still ahead; never assume the story is at the beginning.",
+    "- Treat it as private background guidance. Never reveal, quote, or summarize it to the user.",
+    "- Do not skip ahead: events planned for later waypoints must not happen early. Let the story earn each step.",
+    "",
+    "{{storyline_overview}}",
+    "",
+    "{{storyline_position}}",
+    "</storyline_overview>"
+  ].join(`
+`)
+]);
+var LEGACY_STORYLINE_GENERATOR_TEMPLATES = new Set([[
   "You are a narrative designer preparing private guidance for a storyteller AI that runs a long-form interactive roleplay with {{character_name}}.",
   "",
   "The roleplay will pass through the {{waypoint_count}} prewritten scenes below, in this order. Each scene is a waypoint that will be inserted verbatim when the story reaches it. Between waypoints, the storyteller improvises with the user and must steer the story so each next waypoint can begin naturally.",
@@ -69,7 +121,7 @@ var DEFAULT_STORYLINE_GENERATOR_TEMPLATE = [
   "",
   "{{waypoints}}"
 ].join(`
-`);
+`)]);
 var DEFAULT_SETTINGS = {
   promptTemplate: DEFAULT_PROMPT_TEMPLATE,
   prewrittenSceneCharLimit: 2000,
@@ -334,16 +386,24 @@ function validateSettings(input) {
     throw new SettingsValidationError(issues);
   return { settings, warnings };
 }
+function upgradeLegacyDefaults(settings) {
+  if (LEGACY_STORYLINE_TEMPLATES.has(settings.storylineTemplate))
+    settings.storylineTemplate = DEFAULT_STORYLINE_TEMPLATE;
+  if (LEGACY_STORYLINE_GENERATOR_TEMPLATES.has(settings.storylineGeneratorTemplate)) {
+    settings.storylineGeneratorTemplate = DEFAULT_STORYLINE_GENERATOR_TEMPLATE;
+  }
+  return settings;
+}
 function settingsFromStorage(input) {
   try {
-    return validateSettings(input).settings;
+    return upgradeLegacyDefaults(validateSettings(input).settings);
   } catch (error) {
     if (error instanceof SettingsValidationError && isRecord(input)) {
       const repaired = { ...input };
       for (const issue of error.issues)
         delete repaired[issue.field === "template" ? "promptTemplate" : issue.field];
       try {
-        return validateSettings(repaired).settings;
+        return upgradeLegacyDefaults(validateSettings(repaired).settings);
       } catch {}
     }
     return structuredClone(DEFAULT_SETTINGS);
@@ -535,44 +595,41 @@ function storylinePosition(route, activeIndex, upcomingIndex) {
     const position = route.indexOf(index);
     return position >= 0 ? position + 1 : null;
   };
-  const card = (index) => index === null || index === undefined ? null : index + 1;
   return {
     waypoint: at(activeIndex),
     next: at(upcomingIndex),
     total: route.length,
-    currentGreeting: card(activeIndex),
-    nextGreeting: card(upcomingIndex)
+    hasUpcoming: upcomingIndex !== null && upcomingIndex !== undefined
   };
 }
-function waypointSpan(from, to, single, plural) {
+function sceneSpan(from, to, single, plural) {
   if (from > to)
     return "";
-  return from === to ? "Waypoint " + String(from) + " " + single : "Waypoints " + String(from) + " to " + String(to) + " " + plural;
+  return from === to ? "Prewritten scene " + String(from) + " " + single : "Prewritten scenes " + String(from) + (to === from + 1 ? " and " : " to ") + String(to) + " " + plural;
 }
 function describePosition(position) {
   if (!position || position.total === 0)
     return "";
-  const { waypoint, next, total, currentGreeting, nextGreeting } = position;
+  const { waypoint, next, total, hasUpcoming } = position;
   const of = (value) => String(value) + " of " + String(total);
-  const greeting = (value) => value === null ? "" : " (greeting " + String(value) + " on the character card)";
   const parts = [];
   if (waypoint !== null) {
-    parts.push("Journey position: the story is currently in prewritten waypoint " + of(waypoint) + greeting(currentGreeting) + ".");
-    const past = waypointSpan(1, waypoint - 1, "has already happened.", "have already happened.");
+    parts.push("Story progress: the story is currently in prewritten scene " + of(waypoint) + ".");
+    const past = sceneSpan(1, waypoint - 1, "has already happened.", "have already happened.");
     if (past)
       parts.push(past);
   } else {
-    parts.push("Journey position: the current scene" + greeting(currentGreeting) + " is outside the planned route of " + String(total) + " waypoints.");
+    parts.push("Story progress: the story is currently between planned prewritten scenes.");
   }
   if (next !== null) {
-    parts.push("The next destination is waypoint " + of(next) + greeting(nextGreeting) + "; steer toward it gradually.");
-    const ahead = waypointSpan(next + 1, total, "is still ahead after that.", "are still ahead after that.");
+    parts.push("The next prewritten scene is " + of(next) + "; steer toward it gradually.");
+    const ahead = sceneSpan(next + 1, total, "is an upcoming story beat after that.", "are upcoming story beats after that.");
     if (ahead)
       parts.push(ahead);
-  } else if (nextGreeting !== null) {
-    parts.push("The next prewritten scene" + greeting(nextGreeting) + " is outside the planned route.");
+  } else if (hasUpcoming) {
+    parts.push("Another prewritten scene comes next; steer toward it gradually.");
   } else if (waypoint !== null && waypoint === total) {
-    parts.push("This is the final waypoint. Continue freely while keeping continuity with the overview.");
+    parts.push("This is the final prewritten scene. Continue the story freely while keeping continuity with the overview.");
   } else {
     parts.push("No further prewritten scene is planned.");
   }
@@ -598,7 +655,7 @@ function renderGeneratorPrompt(settings, input) {
   const total = input.route.length;
   const waypoints = input.route.map((greeting, position) => {
     const filtered = applyPromptExcludeRegex(greeting.text, settings.promptExcludeRegex).trim();
-    return "### Waypoint " + String(position + 1) + " of " + String(total) + " (greeting " + String(greeting.greetingIndex + 1) + `)
+    return "### Prewritten scene " + String(position + 1) + " of " + String(total) + `
 ` + clip(filtered || greeting.text, settings.storylineWaypointCharLimit);
   }).join(`
 
@@ -865,9 +922,7 @@ function emptyLoomValues() {
     storylinePosition: "",
     currentWaypoint: "",
     nextWaypoint: "",
-    waypointCount: "",
-    currentGreetingNumber: "",
-    nextGreetingNumber: ""
+    waypointCount: ""
   };
 }
 function emptyStorylineView(reason) {
@@ -1734,9 +1789,7 @@ class WaypointEngine {
           storylinePosition: describePosition(story.position),
           currentWaypoint: story.position?.waypoint ? String(story.position.waypoint) : "",
           nextWaypoint: story.position?.next ? String(story.position.next) : "",
-          waypointCount: story.position?.total ? String(story.position.total) : "",
-          currentGreetingNumber: active ? String(active.greetingIndex + 1) : "",
-          nextGreetingNumber: upcoming ? String(upcoming.greetingIndex + 1) : ""
+          waypointCount: story.position?.total ? String(story.position.total) : ""
         };
       });
     } catch {
@@ -1871,12 +1924,10 @@ var WAYPOINTS_STORYLINE_ACTIVE_MACRO = "waypoints_storyline_active";
 var WAYPOINTS_STORYLINE_MACRO = "waypoints_storyline";
 var WAYPOINTS_STORYLINE_VALUE_MACROS = [
   ["waypoints_storyline_overview", "Returns the raw narrative overview text, without the overview template, when it is active for this chat.", (values) => values.storylineOverview],
-  ["waypoints_storyline_position", "Returns a sentence describing where the story is on the storyline route.", (values) => values.storylinePosition],
-  ["waypoints_current_waypoint", "Returns the current greeting's 1-based position on the storyline route, or nothing when it is off the route.", (values) => values.currentWaypoint],
-  ["waypoints_next_waypoint", "Returns the upcoming greeting's 1-based position on the storyline route, or nothing when it is off the route.", (values) => values.nextWaypoint],
-  ["waypoints_waypoint_count", "Returns the number of greetings on the storyline route.", (values) => values.waypointCount],
-  ["waypoints_current_greeting", "Returns the current greeting's number on the character card (1 is the first message).", (values) => values.currentGreetingNumber],
-  ["waypoints_next_greeting", "Returns the upcoming greeting's number on the character card (1 is the first message).", (values) => values.nextGreetingNumber]
+  ["waypoints_storyline_position", "Returns a sentence describing which prewritten scene the story is in and which comes next.", (values) => values.storylinePosition],
+  ["waypoints_current_waypoint", "Returns the current prewritten scene's number on the storyline, or nothing when the story is between planned scenes.", (values) => values.currentWaypoint],
+  ["waypoints_next_waypoint", "Returns the next prewritten scene's number on the storyline, or nothing when it is not a planned scene.", (values) => values.nextWaypoint],
+  ["waypoints_waypoint_count", "Returns the number of prewritten scenes on the storyline.", (values) => values.waypointCount]
 ];
 function record2(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};

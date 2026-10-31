@@ -62,8 +62,6 @@ describe("Waypoints Loom macros", () => {
       currentWaypoint: "3",
       nextWaypoint: "4",
       waypointCount: "5",
-      currentGreetingNumber: "4",
-      nextGreetingNumber: "6",
     }));
     ensureAlternateGreetingMacros(altMessages.length);
 
@@ -96,8 +94,7 @@ describe("Waypoints Loom macros", () => {
     expect(await macro("waypoints_current_waypoint").handler(context)).toBe("3");
     expect(await macro("waypoints_next_waypoint").handler(context)).toBe("4");
     expect(await macro("waypoints_waypoint_count").handler(context)).toBe("5");
-    expect(await macro("waypoints_current_greeting").handler(context)).toBe("4");
-    expect(await macro("waypoints_next_greeting").handler(context)).toBe("6");
+    expect(registered.some((definition) => definition.name === "waypoints_current_greeting")).toBe(false);
 
     // Switching to a character with two total greetings leaves one alternate.
     altMessages = ["Character B greeting 2"];

@@ -101,8 +101,6 @@ function emptyLoomValues(): WaypointLoomValues {
     currentWaypoint: "",
     nextWaypoint: "",
     waypointCount: "",
-    currentGreetingNumber: "",
-    nextGreetingNumber: "",
   };
 }
 
@@ -1117,8 +1115,6 @@ export class WaypointEngine {
           currentWaypoint: story.position?.waypoint ? String(story.position.waypoint) : "",
           nextWaypoint: story.position?.next ? String(story.position.next) : "",
           waypointCount: story.position?.total ? String(story.position.total) : "",
-          currentGreetingNumber: active ? String(active.greetingIndex + 1) : "",
-          nextGreetingNumber: upcoming ? String(upcoming.greetingIndex + 1) : "",
         };
       });
     } catch {

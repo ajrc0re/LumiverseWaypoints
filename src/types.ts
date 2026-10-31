@@ -202,10 +202,6 @@ export interface WaypointLoomValues {
   nextWaypoint: string;
   /** Number of stops on the route. */
   waypointCount: string;
-  /** 1-based card number of the current greeting (1 is the first message). */
-  currentGreetingNumber: string;
-  /** 1-based card number of the upcoming greeting. */
-  nextGreetingNumber: string;
 }
 
 export interface CharacterView {
@@ -220,10 +216,8 @@ export interface StorylinePosition {
   /** 1-based route position of the upcoming greeting, or null when it is off the route. */
   next: number | null;
   total: number;
-  /** 1-based card number of the current greeting (1 is the first message), or null when none. */
-  currentGreeting: number | null;
-  /** 1-based card number of the upcoming greeting, or null when none. */
-  nextGreeting: number | null;
+  /** An upcoming greeting is selected even if it is off the route. */
+  hasUpcoming: boolean;
 }
 
 export interface StorylineCharacterView {

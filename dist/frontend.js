@@ -25,10 +25,10 @@ var DEFAULT_PROMPT_TEMPLATE = [
 `);
 var DEFAULT_STORYLINE_TEMPLATE = [
   "<storyline_overview>",
-  "This roleplay follows a planned narrative journey for {{character_name}} through a sequence of prewritten waypoint scenes. Use this overview to keep long-term continuity, foreshadowing, character development, and pacing consistent with where the story is headed.",
-  "- The overview covers the entire journey from start to finish, but the story may currently be anywhere along it. Use the journey position below to tell what has already happened and what is still ahead; never assume the story is at the beginning.",
+  "This roleplay follows a planned narrative journey for {{character_name}} through a sequence of prewritten scenes. Use this overview to keep long-term continuity, foreshadowing, character development, and pacing consistent with where the story is headed.",
+  "- The overview covers the entire journey from start to finish, but the story may currently be anywhere along it. Use the story progress below to tell what has already happened and what is still ahead; never assume the story is at the beginning.",
   "- Treat it as private background guidance. Never reveal, quote, or summarize it to the user.",
-  "- Do not skip ahead: events planned for later waypoints must not happen early. Let the story earn each step.",
+  "- Do not skip ahead: story beats planned for later prewritten scenes must not happen early. Let the story earn each step.",
   "",
   "{{storyline_overview}}",
   "",
@@ -37,6 +37,58 @@ var DEFAULT_STORYLINE_TEMPLATE = [
 ].join(`
 `);
 var DEFAULT_STORYLINE_GENERATOR_TEMPLATE = [
+  "You are a narrative designer preparing private guidance for a storyteller AI that runs a long-form interactive roleplay with {{character_name}}.",
+  "",
+  "The roleplay will pass through the {{waypoint_count}} prewritten scenes below, in this order. Each prewritten scene is inserted verbatim when the story reaches it. Between prewritten scenes, the storyteller improvises with the user and must steer the story so the next prewritten scene can begin naturally.",
+  "",
+  "Write a narrative overview of the entire journey that gives the storyteller the long-range context a single upcoming scene cannot:",
+  "1. Premise and arc: the central situation, the relationships, the themes and tone, and how the story escalates or transforms from the first prewritten scene to the last.",
+  "2. Scene by scene, as a numbered list matching the prewritten scene numbers: where and when it takes place, who is present, the emotional state, and what has to happen between the previous prewritten scene and this one for it to begin naturally (the bridge).",
+  "3. Continuity: facts that must stay consistent across the story, such as names, relationships, injuries, possessions, locations, time of day, and season.",
+  "4. Threads to foreshadow early and pay off later.",
+  "",
+  "Rules: summarize in your own words and never quote or reproduce the scenes' prose. Refer to them only as prewritten scenes or story beats. Write in present tense as instructions to the storyteller. Use short headings and plain text without markdown tables. Keep it under about 800 words. Output only the overview.",
+  "",
+  "Character: {{character_name}}",
+  "Description: {{character_description}}",
+  "Personality: {{character_personality}}",
+  "Scenario: {{character_scenario}}",
+  "",
+  "Author guidance: {{author_notes}}",
+  "",
+  "Prewritten scenes in story order:",
+  "",
+  "{{waypoints}}"
+].join(`
+`);
+var LEGACY_STORYLINE_TEMPLATES = new Set([
+  [
+    "<storyline_overview>",
+    "This roleplay follows a planned narrative journey for {{character_name}} through a sequence of prewritten waypoint scenes. Use this overview to keep long-term continuity, foreshadowing, character development, and pacing consistent with where the story is headed.",
+    "- Treat it as private background guidance. Never reveal, quote, or summarize it to the user.",
+    "- Do not skip ahead: events planned for later waypoints must not happen early. Let the story earn each step.",
+    "",
+    "{{storyline_overview}}",
+    "",
+    "{{storyline_position}}",
+    "</storyline_overview>"
+  ].join(`
+`),
+  [
+    "<storyline_overview>",
+    "This roleplay follows a planned narrative journey for {{character_name}} through a sequence of prewritten waypoint scenes. Use this overview to keep long-term continuity, foreshadowing, character development, and pacing consistent with where the story is headed.",
+    "- The overview covers the entire journey from start to finish, but the story may currently be anywhere along it. Use the journey position below to tell what has already happened and what is still ahead; never assume the story is at the beginning.",
+    "- Treat it as private background guidance. Never reveal, quote, or summarize it to the user.",
+    "- Do not skip ahead: events planned for later waypoints must not happen early. Let the story earn each step.",
+    "",
+    "{{storyline_overview}}",
+    "",
+    "{{storyline_position}}",
+    "</storyline_overview>"
+  ].join(`
+`)
+]);
+var LEGACY_STORYLINE_GENERATOR_TEMPLATES = new Set([[
   "You are a narrative designer preparing private guidance for a storyteller AI that runs a long-form interactive roleplay with {{character_name}}.",
   "",
   "The roleplay will pass through the {{waypoint_count}} prewritten scenes below, in this order. Each scene is a waypoint that will be inserted verbatim when the story reaches it. Between waypoints, the storyteller improvises with the user and must steer the story so each next waypoint can begin naturally.",
@@ -60,7 +112,7 @@ var DEFAULT_STORYLINE_GENERATOR_TEMPLATE = [
   "",
   "{{waypoints}}"
 ].join(`
-`);
+`)]);
 var DEFAULT_SETTINGS = {
   promptTemplate: DEFAULT_PROMPT_TEMPLATE,
   prewrittenSceneCharLimit: 2000,
@@ -344,35 +396,34 @@ function cardOrder(greetings, characterId) {
 function sameRoute(left, right) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
-function waypointSpan(from, to, single, plural) {
+function sceneSpan(from, to, single, plural) {
   if (from > to)
     return "";
-  return from === to ? "Waypoint " + String(from) + " " + single : "Waypoints " + String(from) + " to " + String(to) + " " + plural;
+  return from === to ? "Prewritten scene " + String(from) + " " + single : "Prewritten scenes " + String(from) + (to === from + 1 ? " and " : " to ") + String(to) + " " + plural;
 }
 function describePosition(position) {
   if (!position || position.total === 0)
     return "";
-  const { waypoint, next, total, currentGreeting, nextGreeting } = position;
+  const { waypoint, next, total, hasUpcoming } = position;
   const of = (value) => String(value) + " of " + String(total);
-  const greeting = (value) => value === null ? "" : " (greeting " + String(value) + " on the character card)";
   const parts = [];
   if (waypoint !== null) {
-    parts.push("Journey position: the story is currently in prewritten waypoint " + of(waypoint) + greeting(currentGreeting) + ".");
-    const past = waypointSpan(1, waypoint - 1, "has already happened.", "have already happened.");
+    parts.push("Story progress: the story is currently in prewritten scene " + of(waypoint) + ".");
+    const past = sceneSpan(1, waypoint - 1, "has already happened.", "have already happened.");
     if (past)
       parts.push(past);
   } else {
-    parts.push("Journey position: the current scene" + greeting(currentGreeting) + " is outside the planned route of " + String(total) + " waypoints.");
+    parts.push("Story progress: the story is currently between planned prewritten scenes.");
   }
   if (next !== null) {
-    parts.push("The next destination is waypoint " + of(next) + greeting(nextGreeting) + "; steer toward it gradually.");
-    const ahead = waypointSpan(next + 1, total, "is still ahead after that.", "are still ahead after that.");
+    parts.push("The next prewritten scene is " + of(next) + "; steer toward it gradually.");
+    const ahead = sceneSpan(next + 1, total, "is an upcoming story beat after that.", "are upcoming story beats after that.");
     if (ahead)
       parts.push(ahead);
-  } else if (nextGreeting !== null) {
-    parts.push("The next prewritten scene" + greeting(nextGreeting) + " is outside the planned route.");
+  } else if (hasUpcoming) {
+    parts.push("Another prewritten scene comes next; steer toward it gradually.");
   } else if (waypoint !== null && waypoint === total) {
-    parts.push("This is the final waypoint. Continue freely while keeping continuity with the overview.");
+    parts.push("This is the final prewritten scene. Continue the story freely while keeping continuity with the overview.");
   } else {
     parts.push("No further prewritten scene is planned.");
   }
@@ -1887,7 +1938,7 @@ function setup(ctx) {
 {{/if}}`));
     loomHelp.append(element("p", "wp-help", "Then simply call the variable using {{getvar::shape_scene_direction}} where ever it would be relevant in your COT prompt. The variable will clear itself out when waypoints is not active, so always leave the prompt enabled in your preset."));
     loomHelp.append(element("p", "wp-help", "Pre-run council tools can also use {{altMessage1}}, {{altMessage2}}, and so on for this character's alternate greetings. {{altMessages}} returns them as a JSON array; the standard {{firstMessage}} is separate. Higher altMessage indices are unregistered when switching to a character with fewer alternate greetings. {{nextMessages}} returns the choices offered by Waypoints' next-greeting picker (only later greetings in solo chats). {{currentMessage}} and {{nextMessage}} return the selected current and upcoming greetings."));
-    loomHelp.append(element("p", "wp-help", "The narrative overview has its own pair: {{if::{{waypoints_storyline_active}}}}{{waypoints_storyline}}{{/if}}. It is active when the open chat has the overview switched on in the Storyline tab. To write your own wrapper, use {{waypoints_storyline_overview}} (raw overview text), {{waypoints_storyline_position}} (position sentence), {{waypoints_current_waypoint}}, {{waypoints_next_waypoint}}, and {{waypoints_waypoint_count}} (route positions), and {{waypoints_current_greeting}} and {{waypoints_next_greeting}} (greeting numbers on the card)."));
+    loomHelp.append(element("p", "wp-help", "The narrative overview has its own pair: {{if::{{waypoints_storyline_active}}}}{{waypoints_storyline}}{{/if}}. It is active when the open chat has the overview switched on in the Storyline tab. To write your own wrapper, use {{waypoints_storyline_overview}} (raw overview text), {{waypoints_storyline_position}} (story progress sentence), and {{waypoints_current_waypoint}}, {{waypoints_next_waypoint}}, and {{waypoints_waypoint_count}} (scene numbers along the storyline)."));
     settings.append(loomHelp);
     settings.append(element("div", "wp-divider"));
     settings.append(element("h4", "", "Storyline"));

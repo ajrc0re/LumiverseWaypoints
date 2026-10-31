@@ -100,30 +100,35 @@ describe("storyline routes", () => {
 });
 
 describe("storyline prompts", () => {
-  test("describes the journey position with route and card numbers", () => {
+  test("describes story progress in prewritten scenes only", () => {
     expect(describePosition(storylinePosition([0, 2, 3, 5], 2, 3))).toBe(
-      "Journey position: the story is currently in prewritten waypoint 2 of 4 (greeting 3 on the character card). "
-      + "Waypoint 1 has already happened. "
-      + "The next destination is waypoint 3 of 4 (greeting 4 on the character card); steer toward it gradually. "
-      + "Waypoint 4 is still ahead after that.",
+      "Story progress: the story is currently in prewritten scene 2 of 4. "
+      + "Prewritten scene 1 has already happened. "
+      + "The next prewritten scene is 3 of 4; steer toward it gradually. "
+      + "Prewritten scene 4 is an upcoming story beat after that.",
     );
-    expect(describePosition(storylinePosition([0, 1, 2, 3, 4], 3, 4))).toContain("Waypoints 1 to 3 have already happened.");
-    expect(describePosition(storylinePosition([0, 1, 2, 3, 4], 0, 1))).toContain("Waypoints 3 to 5 are still ahead after that.");
-    expect(describePosition(storylinePosition([0, 2, 3], 3, null))).toContain("This is the final waypoint.");
+    expect(describePosition(storylinePosition([0, 1, 2, 3, 4], 3, 4))).toContain("Prewritten scenes 1 to 3 have already happened.");
+    expect(describePosition(storylinePosition([0, 1, 2, 3, 4], 0, 1))).toContain("Prewritten scenes 3 to 5 are upcoming story beats after that.");
+    expect(describePosition(storylinePosition([0, 2, 3], 3, null))).toContain("This is the final prewritten scene.");
     expect(describePosition(storylinePosition([0, 2, 3], 1, 0))).toBe(
-      "Journey position: the current scene (greeting 2 on the character card) is outside the planned route of 3 waypoints. "
-      + "The next destination is waypoint 1 of 3 (greeting 1 on the character card); steer toward it gradually. "
-      + "Waypoints 2 to 3 are still ahead after that.",
+      "Story progress: the story is currently between planned prewritten scenes. "
+      + "The next prewritten scene is 1 of 3; steer toward it gradually. "
+      + "Prewritten scenes 2 and 3 are upcoming story beats after that.",
     );
-    expect(describePosition(storylinePosition([0, 2], 2, 1))).toContain("The next prewritten scene (greeting 2 on the character card) is outside the planned route.");
+    expect(describePosition(storylinePosition([0, 2], 2, 1))).toContain("Another prewritten scene comes next");
     expect(describePosition(storylinePosition([], 0, 1))).toBe("");
+    // The roleplay model never sees greetings or card numbers.
+    for (const [active, upcoming] of [[2, 3], [1, 0], [3, null], [2, 1]] as const) {
+      expect(describePosition(storylinePosition([0, 2, 3], active, upcoming))).not.toMatch(/greeting|card/i);
+    }
   });
 
   test("renders the overview template without re-expanding placeholders inside values", () => {
     const content = renderStorylinePrompt(DEFAULT_SETTINGS, "Uses {{storyline_position}} literally.", storylinePosition([0, 1], 0, 1), "Ada");
     expect(content).toContain("narrative journey for Ada");
     expect(content).toContain("Uses {{storyline_position}} literally.");
-    expect(content).toContain("waypoint 1 of 2");
+    expect(content).toContain("prewritten scene 1 of 2");
+    expect(renderStorylinePrompt(DEFAULT_SETTINGS, "Overview", storylinePosition([0, 1, 2], 1, 2), "Ada")).not.toMatch(/greeting|waypoint/i);
   });
 
   test("builds generator instructions from the route, filtering and clipping each greeting", () => {
@@ -132,9 +137,10 @@ describe("storyline prompts", () => {
       route: [greetings(["<div>Hidden</div>Tavern"])[0], { ...greetings(["", "x".repeat(300)])[1] }],
       notes: "Slow burn",
     });
-    expect(prompt).toContain("### Waypoint 1 of 2 (greeting 1)\nHiddenTavern");
+    expect(prompt).toContain("### Prewritten scene 1 of 2\nHiddenTavern");
     expect(prompt).not.toContain("<div>");
-    expect(prompt).toContain("### Waypoint 2 of 2 (greeting 2)");
+    expect(prompt).toContain("### Prewritten scene 2 of 2\n");
+    expect(prompt).not.toMatch(/greeting/i);
     expect(prompt).toContain("[…truncated]");
     expect(prompt).toContain("Author guidance: Slow burn");
     expect(prompt).toContain("Scenario: (none)");
@@ -158,6 +164,14 @@ describe("storyline prompts", () => {
     const repaired = settingsFromStorage({ ...DEFAULT_SETTINGS, promptTemplate: DEFAULT_SETTINGS.promptTemplate + "\nCustom", insertionDepth: -4 });
     expect(repaired.promptTemplate).toEndWith("Custom");
     expect(repaired.insertionDepth).toBe(DEFAULT_SETTINGS.insertionDepth);
+    // Copies of an earlier built-in storyline template follow the current default.
+    const legacy = DEFAULT_SETTINGS.storylineTemplate
+      .replace("a sequence of prewritten scenes.", "a sequence of prewritten waypoint scenes.")
+      .replace("Use the story progress below", "Use the journey position below")
+      .replace("story beats planned for later prewritten scenes", "events planned for later waypoints");
+    expect(legacy).not.toBe(DEFAULT_SETTINGS.storylineTemplate);
+    expect(settingsFromStorage({ ...DEFAULT_SETTINGS, storylineTemplate: legacy }).storylineTemplate).toBe(DEFAULT_SETTINGS.storylineTemplate);
+    expect(settingsFromStorage({ ...DEFAULT_SETTINGS, storylineTemplate: legacy + " edited" }).storylineTemplate).toEndWith(" edited");
   });
 });
 

@@ -1519,7 +1519,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     loomHelp.append(element(
       "p",
       "wp-help",
-      "The narrative overview has its own pair: {{if::{{waypoints_storyline_active}}}}{{waypoints_storyline}}{{/if}}. It is active when the open chat has the overview switched on in the Storyline tab. To write your own wrapper, use {{waypoints_storyline_overview}} (raw overview text), {{waypoints_storyline_position}} (position sentence), {{waypoints_current_waypoint}}, {{waypoints_next_waypoint}}, and {{waypoints_waypoint_count}} (route positions), and {{waypoints_current_greeting}} and {{waypoints_next_greeting}} (greeting numbers on the card).",
+      "The narrative overview has its own pair: {{if::{{waypoints_storyline_active}}}}{{waypoints_storyline}}{{/if}}. It is active when the open chat has the overview switched on in the Storyline tab. To write your own wrapper, use {{waypoints_storyline_overview}} (raw overview text), {{waypoints_storyline_position}} (story progress sentence), and {{waypoints_current_waypoint}}, {{waypoints_next_waypoint}}, and {{waypoints_waypoint_count}} (scene numbers along the storyline).",
     ));
     settings.append(loomHelp);
 

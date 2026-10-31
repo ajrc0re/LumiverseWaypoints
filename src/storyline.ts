@@ -146,46 +146,47 @@ export function storylinePosition(
     const position = route.indexOf(index);
     return position >= 0 ? position + 1 : null;
   };
-  const card = (index: number | null | undefined) => index === null || index === undefined ? null : index + 1;
   return {
     waypoint: at(activeIndex),
     next: at(upcomingIndex),
     total: route.length,
-    currentGreeting: card(activeIndex),
-    nextGreeting: card(upcomingIndex),
+    hasUpcoming: upcomingIndex !== null && upcomingIndex !== undefined,
   };
 }
 
-function waypointSpan(from: number, to: number, single: string, plural: string): string {
+function sceneSpan(from: number, to: number, single: string, plural: string): string {
   if (from > to) return "";
-  return from === to ? "Waypoint " + String(from) + " " + single : "Waypoints " + String(from) + " to " + String(to) + " " + plural;
+  return from === to
+    ? "Prewritten scene " + String(from) + " " + single
+    : "Prewritten scenes " + String(from) + (to === from + 1 ? " and " : " to ") + String(to) + " " + plural;
 }
 
 /**
- * A self-contained position statement, so a prompt reused for hundreds of
- * turns always tells the model where in the journey the story is now.
+ * A self-contained progress statement, so a prompt reused for hundreds of
+ * turns always tells the model where in the storyline the story is now. This
+ * text reaches the roleplay model, so it speaks only of prewritten scenes and
+ * story beats, never of greetings or the character card.
  */
 export function describePosition(position: StorylinePosition | null): string {
   if (!position || position.total === 0) return "";
-  const { waypoint, next, total, currentGreeting, nextGreeting } = position;
+  const { waypoint, next, total, hasUpcoming } = position;
   const of = (value: number) => String(value) + " of " + String(total);
-  const greeting = (value: number | null) => value === null ? "" : " (greeting " + String(value) + " on the character card)";
   const parts: string[] = [];
   if (waypoint !== null) {
-    parts.push("Journey position: the story is currently in prewritten waypoint " + of(waypoint) + greeting(currentGreeting) + ".");
-    const past = waypointSpan(1, waypoint - 1, "has already happened.", "have already happened.");
+    parts.push("Story progress: the story is currently in prewritten scene " + of(waypoint) + ".");
+    const past = sceneSpan(1, waypoint - 1, "has already happened.", "have already happened.");
     if (past) parts.push(past);
   } else {
-    parts.push("Journey position: the current scene" + greeting(currentGreeting) + " is outside the planned route of " + String(total) + " waypoints.");
+    parts.push("Story progress: the story is currently between planned prewritten scenes.");
   }
   if (next !== null) {
-    parts.push("The next destination is waypoint " + of(next) + greeting(nextGreeting) + "; steer toward it gradually.");
-    const ahead = waypointSpan(next + 1, total, "is still ahead after that.", "are still ahead after that.");
+    parts.push("The next prewritten scene is " + of(next) + "; steer toward it gradually.");
+    const ahead = sceneSpan(next + 1, total, "is an upcoming story beat after that.", "are upcoming story beats after that.");
     if (ahead) parts.push(ahead);
-  } else if (nextGreeting !== null) {
-    parts.push("The next prewritten scene" + greeting(nextGreeting) + " is outside the planned route.");
+  } else if (hasUpcoming) {
+    parts.push("Another prewritten scene comes next; steer toward it gradually.");
   } else if (waypoint !== null && waypoint === total) {
-    parts.push("This is the final waypoint. Continue freely while keeping continuity with the overview.");
+    parts.push("This is the final prewritten scene. Continue the story freely while keeping continuity with the overview.");
   } else {
     parts.push("No further prewritten scene is planned.");
   }
@@ -227,8 +228,7 @@ export function renderGeneratorPrompt(
   const total = input.route.length;
   const waypoints = input.route.map((greeting, position) => {
     const filtered = applyPromptExcludeRegex(greeting.text, settings.promptExcludeRegex).trim();
-    return "### Waypoint " + String(position + 1) + " of " + String(total)
-      + " (greeting " + String(greeting.greetingIndex + 1) + ")\n"
+    return "### Prewritten scene " + String(position + 1) + " of " + String(total) + "\n"
       + clip(filtered || greeting.text, settings.storylineWaypointCharLimit);
   }).join("\n\n");
   const notes = input.notes.trim();

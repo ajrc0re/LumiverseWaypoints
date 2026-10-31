@@ -250,14 +250,12 @@ describe("WaypointEngine prompt and processor", () => {
       storylineActive: false,
       storyline: "",
       storylineOverview: "",
-      storylinePosition: "Journey position: the story is currently in prewritten waypoint 1 of 3 (greeting 1 on the character card). "
-        + "The next destination is waypoint 2 of 3 (greeting 2 on the character card); steer toward it gradually. "
-        + "Waypoint 3 is still ahead after that.",
+      storylinePosition: "Story progress: the story is currently in prewritten scene 1 of 3. "
+        + "The next prewritten scene is 2 of 3; steer toward it gradually. "
+        + "Prewritten scene 3 is an upcoming story beat after that.",
       currentWaypoint: "1",
       nextWaypoint: "2",
       waypointCount: "3",
-      currentGreetingNumber: "1",
-      nextGreetingNumber: "2",
     });
   });
 
@@ -583,7 +581,7 @@ describe("WaypointEngine storylines", () => {
     view = await engine.view("chat");
     expect(view.active?.greetingIndex).toBe(3);
     expect(view.upcoming?.greetingIndex).toBe(1);
-    expect(view.storyline.prompt.position).toEqual({ waypoint: 2, next: 3, total: 3, currentGreeting: 4, nextGreeting: 2 });
+    expect(view.storyline.prompt.position).toEqual({ waypoint: 2, next: 3, total: 3, hasUpcoming: true });
 
     // Turning the route off in this chat returns to card order from the current greeting.
     await engine.setStoryRoute("chat", false);
@@ -612,22 +610,21 @@ describe("WaypointEngine storylines", () => {
     expect(host.quietCalls[0].connection_id).toBe("fast");
     const sent = (host.quietCalls[0].messages as Array<{ content: string }>)[0].content;
     expect(sent).toContain("Author guidance: Keep it tense");
-    expect(sent).toContain("### Waypoint 2 of 2 (greeting 3)\nGreeting 3");
+    expect(sent).toContain("### Prewritten scene 2 of 2\nGreeting 3");
+    expect(sent).not.toMatch(/\(greeting \d/);
     expect(sent).not.toContain("Greeting 2");
 
     let view = await engine.view("chat");
     expect(view.storyline.characters[0]).toMatchObject({ overview: "An overview of the journey.", stale: false, notes: "Keep it tense" });
     expect(view.storyline.prompt.ready).toBe(true);
     expect(view.storyline.prompt.content).toContain("An overview of the journey.");
-    expect(view.storyline.prompt.content).toContain("waypoint 1 of 2 (greeting 1 on the character card). The next destination is waypoint 2 of 2 (greeting 3 on the character card)");
+    expect(view.storyline.prompt.content).toContain("prewritten scene 1 of 2. The next prewritten scene is 2 of 2");
     expect(await engine.loomValues("chat")).toMatchObject({
       storylineActive: true,
       storylineOverview: "An overview of the journey.",
       currentWaypoint: "1",
       nextWaypoint: "2",
       waypointCount: "2",
-      currentGreetingNumber: "1",
-      nextGreetingNumber: "3",
     });
 
     const result = await engine.intercept([{ role: "system", content: "old" }, { role: "user", content: "new" }], "chat");

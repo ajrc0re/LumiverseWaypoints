@@ -73,7 +73,7 @@ The drawer's **Storyline** tab plans a character's whole journey instead of one 
 - **Narrative overview**: select **Generate overview** to have the model write a meta prompt describing the entire journey: the premise and arc, each waypoint and the bridge into it, continuity facts, and threads to foreshadow. Optional **Author guidance** steers the generator. The overview stays fully editable, and Waypoints warns when the route or its greetings have changed since it was generated. Generation can be cancelled, and the route, guidance, and overview are saved together when it finishes.
 - **This chat**: two per-chat switches. **Follow the storyline route** and **Add the narrative overview to prompts** are on by default and change only the open chat. The compass menu can also toggle the overview.
 
-When the overview is on, it is rendered with the **Overview prompt template** and ends with a journey position statement that gives both the route position and the greeting's number on the card, so the same prompt stays clear 100 turns in. For example: "the story is currently in prewritten waypoint 3 of 5 (greeting 4 on the character card). Waypoints 1 to 2 have already happened. The next destination is waypoint 4 of 5 (greeting 6 on the character card); steer toward it gradually. Waypoint 5 is still ahead after that." With **Auto-prompt** on, it is inserted at its own depth (before the scene prompt when both share a depth). Loom presets can place it instead:
+When the overview is on, it is rendered with the **Overview prompt template** and ends with a story progress statement, so the same prompt stays clear 100 turns in. For example: "Story progress: the story is currently in prewritten scene 3 of 5. Prewritten scenes 1 and 2 have already happened. The next prewritten scene is 4 of 5; steer toward it gradually. Prewritten scene 5 is an upcoming story beat after that." Everything the roleplay model sees speaks of prewritten scenes and story beats, never greetings or the character card. With **Auto-prompt** on, it is inserted at its own depth (before the scene prompt when both share a depth). Loom presets can place it instead:
 
 ```text
 {{if::{{waypoints_storyline_active}}}}
@@ -86,12 +86,11 @@ To write your own wrapper instead of the template, these macros expose the parts
 | Macro | Returns |
 | --- | --- |
 | `{{waypoints_storyline_overview}}` | The raw overview text, only while the overview is active in this chat. |
-| `{{waypoints_storyline_position}}` | The journey position sentence. |
-| `{{waypoints_current_waypoint}}` / `{{waypoints_next_waypoint}}` | 1-based route positions of the current and upcoming greetings. Empty when that greeting is off the route or there is none. |
-| `{{waypoints_waypoint_count}}` | Number of stops on the route. |
-| `{{waypoints_current_greeting}}` / `{{waypoints_next_greeting}}` | Card numbers of the current and upcoming greetings, where 1 is the first message. |
+| `{{waypoints_storyline_position}}` | The story progress statement. |
+| `{{waypoints_current_waypoint}}` / `{{waypoints_next_waypoint}}` | The current and next prewritten scene's number along the storyline. Empty when the story is between planned scenes or nothing is next. |
+| `{{waypoints_waypoint_count}}` | Number of prewritten scenes on the storyline. |
 
-Without a custom route, the route is every greeting in card order, so the waypoint and greeting numbers match.
+Built-in templates saved by an earlier version are upgraded to the current default automatically; edited templates are left alone.
 
 In group chats, each member has their own storyline, and prompts use the overview of the character whose greeting is current.
 
