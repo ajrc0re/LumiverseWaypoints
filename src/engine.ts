@@ -12,6 +12,7 @@ import {
   STORYLINE_NOTES_LIMIT,
   STORYLINE_OVERVIEW_LIMIT,
   cardOrder,
+  describePosition,
   effectiveRoute,
   emptyStoryline,
   generatedText,
@@ -95,6 +96,13 @@ function emptyLoomValues(): WaypointLoomValues {
     nextMessage: "",
     storylineActive: false,
     storyline: "",
+    storylineOverview: "",
+    storylinePosition: "",
+    currentWaypoint: "",
+    nextWaypoint: "",
+    waypointCount: "",
+    currentGreetingNumber: "",
+    nextGreetingNumber: "",
   };
 }
 
@@ -1104,6 +1112,13 @@ export class WaypointEngine {
           nextMessage: upcoming?.text ?? "",
           storylineActive: story.ready,
           storyline: story.ready ? story.content : "",
+          storylineOverview: story.ready && story.characterId ? (context.storylines?.[story.characterId]?.overview.trim() ?? "") : "",
+          storylinePosition: describePosition(story.position),
+          currentWaypoint: story.position?.waypoint ? String(story.position.waypoint) : "",
+          nextWaypoint: story.position?.next ? String(story.position.next) : "",
+          waypointCount: story.position?.total ? String(story.position.total) : "",
+          currentGreetingNumber: active ? String(active.greetingIndex + 1) : "",
+          nextGreetingNumber: upcoming ? String(upcoming.greetingIndex + 1) : "",
         };
       });
     } catch {

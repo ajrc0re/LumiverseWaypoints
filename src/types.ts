@@ -192,6 +192,20 @@ export interface WaypointLoomValues {
   storylineActive: boolean;
   /** Rendered narrative overview prompt. */
   storyline: string;
+  /** Raw overview text, without the template, when the overview is active. */
+  storylineOverview: string;
+  /** Journey position sentence, such as "the story is at waypoint 2 of 5". */
+  storylinePosition: string;
+  /** 1-based route position of the current greeting; empty when it is off the route. */
+  currentWaypoint: string;
+  /** 1-based route position of the upcoming greeting; empty when it is off the route. */
+  nextWaypoint: string;
+  /** Number of stops on the route. */
+  waypointCount: string;
+  /** 1-based card number of the current greeting (1 is the first message). */
+  currentGreetingNumber: string;
+  /** 1-based card number of the upcoming greeting. */
+  nextGreetingNumber: string;
 }
 
 export interface CharacterView {

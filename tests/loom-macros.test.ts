@@ -10,6 +10,7 @@ import {
   WAYPOINTS_NEXT_MESSAGE_MACRO,
   WAYPOINTS_STORYLINE_ACTIVE_MACRO,
   WAYPOINTS_STORYLINE_MACRO,
+  WAYPOINTS_STORYLINE_VALUE_MACROS,
   WAYPOINTS_NEXT_MESSAGES_MACRO,
 } from "../src/loom-macros";
 
@@ -56,6 +57,13 @@ describe("Waypoints Loom macros", () => {
       nextMessage,
       storylineActive: chatId === "chat",
       storyline: "Rendered storyline prompt",
+      storylineOverview: "Raw overview",
+      storylinePosition: "Journey position: waypoint 3 of 5.",
+      currentWaypoint: "3",
+      nextWaypoint: "4",
+      waypointCount: "5",
+      currentGreetingNumber: "4",
+      nextGreetingNumber: "6",
     }));
     ensureAlternateGreetingMacros(altMessages.length);
 
@@ -68,6 +76,7 @@ describe("Waypoints Loom macros", () => {
       WAYPOINTS_NEXT_MESSAGE_MACRO,
       WAYPOINTS_STORYLINE_ACTIVE_MACRO,
       WAYPOINTS_STORYLINE_MACRO,
+      ...WAYPOINTS_STORYLINE_VALUE_MACROS.map(([name]) => name),
       ...Array.from({ length: 9 }, (_, index) => `altMessage${index + 1}`),
     ]);
     expect(registered.every((definition) => definition.volatile)).toBe(true);
@@ -83,6 +92,12 @@ describe("Waypoints Loom macros", () => {
     expect(await macro(WAYPOINTS_STORYLINE_ACTIVE_MACRO).handler(context)).toBe("true");
     expect(await macro(WAYPOINTS_STORYLINE_MACRO).handler(context)).toBe("Rendered storyline prompt");
     expect(await macro(WAYPOINTS_STORYLINE_MACRO).handler({ chatId: "other" })).toBe("");
+    expect(await macro("waypoints_storyline_overview").handler(context)).toBe("Raw overview");
+    expect(await macro("waypoints_current_waypoint").handler(context)).toBe("3");
+    expect(await macro("waypoints_next_waypoint").handler(context)).toBe("4");
+    expect(await macro("waypoints_waypoint_count").handler(context)).toBe("5");
+    expect(await macro("waypoints_current_greeting").handler(context)).toBe("4");
+    expect(await macro("waypoints_next_greeting").handler(context)).toBe("6");
 
     // Switching to a character with two total greetings leaves one alternate.
     altMessages = ["Character B greeting 2"];

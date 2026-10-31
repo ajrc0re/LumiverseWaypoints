@@ -35,6 +35,7 @@ var DEFAULT_PROMPT_TEMPLATE = [
 var DEFAULT_STORYLINE_TEMPLATE = [
   "<storyline_overview>",
   "This roleplay follows a planned narrative journey for {{character_name}} through a sequence of prewritten waypoint scenes. Use this overview to keep long-term continuity, foreshadowing, character development, and pacing consistent with where the story is headed.",
+  "- The overview covers the entire journey from start to finish, but the story may currently be anywhere along it. Use the journey position below to tell what has already happened and what is still ahead; never assume the story is at the beginning.",
   "- Treat it as private background guidance. Never reveal, quote, or summarize it to the user.",
   "- Do not skip ahead: events planned for later waypoints must not happen early. Let the story earn each step.",
   "",
@@ -836,7 +837,14 @@ function emptyLoomValues() {
     currentMessage: "",
     nextMessage: "",
     storylineActive: false,
-    storyline: ""
+    storyline: "",
+    storylineOverview: "",
+    storylinePosition: "",
+    currentWaypoint: "",
+    nextWaypoint: "",
+    waypointCount: "",
+    currentGreetingNumber: "",
+    nextGreetingNumber: ""
   };
 }
 function emptyStorylineView(reason) {
@@ -1698,7 +1706,14 @@ class WaypointEngine {
           currentMessage: active?.text ?? "",
           nextMessage: upcoming?.text ?? "",
           storylineActive: story.ready,
-          storyline: story.ready ? story.content : ""
+          storyline: story.ready ? story.content : "",
+          storylineOverview: story.ready && story.characterId ? context.storylines?.[story.characterId]?.overview.trim() ?? "" : "",
+          storylinePosition: describePosition(story.position),
+          currentWaypoint: story.position?.waypoint ? String(story.position.waypoint) : "",
+          nextWaypoint: story.position?.next ? String(story.position.next) : "",
+          waypointCount: story.position?.total ? String(story.position.total) : "",
+          currentGreetingNumber: active ? String(active.greetingIndex + 1) : "",
+          nextGreetingNumber: upcoming ? String(upcoming.greetingIndex + 1) : ""
         };
       });
     } catch {
@@ -1831,6 +1846,15 @@ var WAYPOINTS_CURRENT_MESSAGE_MACRO = "currentMessage";
 var WAYPOINTS_NEXT_MESSAGE_MACRO = "nextMessage";
 var WAYPOINTS_STORYLINE_ACTIVE_MACRO = "waypoints_storyline_active";
 var WAYPOINTS_STORYLINE_MACRO = "waypoints_storyline";
+var WAYPOINTS_STORYLINE_VALUE_MACROS = [
+  ["waypoints_storyline_overview", "Returns the raw narrative overview text, without the overview template, when it is active for this chat.", (values) => values.storylineOverview],
+  ["waypoints_storyline_position", "Returns a sentence describing where the story is on the storyline route.", (values) => values.storylinePosition],
+  ["waypoints_current_waypoint", "Returns the current greeting's 1-based position on the storyline route, or nothing when it is off the route.", (values) => values.currentWaypoint],
+  ["waypoints_next_waypoint", "Returns the upcoming greeting's 1-based position on the storyline route, or nothing when it is off the route.", (values) => values.nextWaypoint],
+  ["waypoints_waypoint_count", "Returns the number of greetings on the storyline route.", (values) => values.waypointCount],
+  ["waypoints_current_greeting", "Returns the current greeting's number on the character card (1 is the first message).", (values) => values.currentGreetingNumber],
+  ["waypoints_next_greeting", "Returns the upcoming greeting's number on the character card (1 is the first message).", (values) => values.nextGreetingNumber]
+];
 function record2(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -1873,6 +1897,9 @@ function registerWaypointsLoomMacros(api, resolver) {
   register(api, WAYPOINTS_NEXT_MESSAGE_MACRO, "Returns the currently selected upcoming Waypoints greeting.", "string", resolver, (values) => values.nextMessage);
   register(api, WAYPOINTS_STORYLINE_ACTIVE_MACRO, "Returns true when this chat's narrative overview is enabled and has content.", "boolean", resolver, (values) => values.storylineActive ? "true" : "false");
   register(api, WAYPOINTS_STORYLINE_MACRO, "Returns the rendered Waypoints narrative overview (storyline) prompt for this chat.", "string", resolver, (values) => values.storylineActive ? values.storyline : "");
+  for (const [name, description, select] of WAYPOINTS_STORYLINE_VALUE_MACROS) {
+    register(api, name, description, "string", resolver, select);
+  }
   let registeredAlternateGreetingCount = 0;
   return (alternateGreetingCount) => {
     const count = Number.isFinite(alternateGreetingCount) ? Math.max(0, Math.floor(alternateGreetingCount)) : 0;

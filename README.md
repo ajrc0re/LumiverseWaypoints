@@ -81,6 +81,18 @@ When the overview is on, it is rendered with the **Overview prompt template** an
 {{/if}}
 ```
 
+To write your own wrapper instead of the template, these macros expose the parts:
+
+| Macro | Returns |
+| --- | --- |
+| `{{waypoints_storyline_overview}}` | The raw overview text, only while the overview is active in this chat. |
+| `{{waypoints_storyline_position}}` | The journey position sentence. |
+| `{{waypoints_current_waypoint}}` / `{{waypoints_next_waypoint}}` | 1-based route positions of the current and upcoming greetings. Empty when that greeting is off the route or there is none. |
+| `{{waypoints_waypoint_count}}` | Number of stops on the route. |
+| `{{waypoints_current_greeting}}` / `{{waypoints_next_greeting}}` | Card numbers of the current and upcoming greetings, where 1 is the first message. |
+
+Without a custom route, the route is every greeting in card order, so the waypoint and greeting numbers match.
+
 In group chats, each member has their own storyline, and prompts use the overview of the character whose greeting is current.
 
 ## Prompts

@@ -26,6 +26,7 @@ var DEFAULT_PROMPT_TEMPLATE = [
 var DEFAULT_STORYLINE_TEMPLATE = [
   "<storyline_overview>",
   "This roleplay follows a planned narrative journey for {{character_name}} through a sequence of prewritten waypoint scenes. Use this overview to keep long-term continuity, foreshadowing, character development, and pacing consistent with where the story is headed.",
+  "- The overview covers the entire journey from start to finish, but the story may currently be anywhere along it. Use the journey position below to tell what has already happened and what is still ahead; never assume the story is at the beginning.",
   "- Treat it as private background guidance. Never reveal, quote, or summarize it to the user.",
   "- Do not skip ahead: events planned for later waypoints must not happen early. Let the story earn each step.",
   "",
@@ -1870,7 +1871,7 @@ function setup(ctx) {
 {{/if}}`));
     loomHelp.append(element("p", "wp-help", "Then simply call the variable using {{getvar::shape_scene_direction}} where ever it would be relevant in your COT prompt. The variable will clear itself out when waypoints is not active, so always leave the prompt enabled in your preset."));
     loomHelp.append(element("p", "wp-help", "Pre-run council tools can also use {{altMessage1}}, {{altMessage2}}, and so on for this character's alternate greetings. {{altMessages}} returns them as a JSON array; the standard {{firstMessage}} is separate. Higher altMessage indices are unregistered when switching to a character with fewer alternate greetings. {{nextMessages}} returns the choices offered by Waypoints' next-greeting picker (only later greetings in solo chats). {{currentMessage}} and {{nextMessage}} return the selected current and upcoming greetings."));
-    loomHelp.append(element("p", "wp-help", "The narrative overview has its own pair: {{if::{{waypoints_storyline_active}}}}{{waypoints_storyline}}{{/if}}. It is active when the open chat has the overview switched on in the Storyline tab."));
+    loomHelp.append(element("p", "wp-help", "The narrative overview has its own pair: {{if::{{waypoints_storyline_active}}}}{{waypoints_storyline}}{{/if}}. It is active when the open chat has the overview switched on in the Storyline tab. To write your own wrapper, use {{waypoints_storyline_overview}} (raw overview text), {{waypoints_storyline_position}} (position sentence), {{waypoints_current_waypoint}}, {{waypoints_next_waypoint}}, and {{waypoints_waypoint_count}} (route positions), and {{waypoints_current_greeting}} and {{waypoints_next_greeting}} (greeting numbers on the card)."));
     settings.append(loomHelp);
     settings.append(element("div", "wp-divider"));
     settings.append(element("h4", "", "Storyline"));

@@ -249,6 +249,13 @@ describe("WaypointEngine prompt and processor", () => {
       nextMessage: "Greeting 2",
       storylineActive: false,
       storyline: "",
+      storylineOverview: "",
+      storylinePosition: "Journey position: the story is at waypoint 1 of 3; the next waypoint is 2 of 3.",
+      currentWaypoint: "1",
+      nextWaypoint: "2",
+      waypointCount: "3",
+      currentGreetingNumber: "1",
+      nextGreetingNumber: "2",
     });
   });
 
@@ -611,7 +618,15 @@ describe("WaypointEngine storylines", () => {
     expect(view.storyline.prompt.ready).toBe(true);
     expect(view.storyline.prompt.content).toContain("An overview of the journey.");
     expect(view.storyline.prompt.content).toContain("waypoint 1 of 2; the next waypoint is 2 of 2");
-    expect((await engine.loomValues("chat")).storylineActive).toBe(true);
+    expect(await engine.loomValues("chat")).toMatchObject({
+      storylineActive: true,
+      storylineOverview: "An overview of the journey.",
+      currentWaypoint: "1",
+      nextWaypoint: "2",
+      waypointCount: "2",
+      currentGreetingNumber: "1",
+      nextGreetingNumber: "3",
+    });
 
     const result = await engine.intercept([{ role: "system", content: "old" }, { role: "user", content: "new" }], "chat");
     const intercepted = result as Exclude<typeof result, unknown[]>;
