@@ -20,9 +20,12 @@ describe("drawer model", () => {
     expect(approximatePromptTokenCount(5678)).toBe(1420);
   });
 
-  test("switches between Waypoints and Settings tabs", () => {
-    expect(nextDrawerPage("waypoints", "next")).toBe("settings");
-    expect(nextDrawerPage("settings", "previous")).toBe("waypoints");
+  test("cycles through the Waypoints, Storyline, and Settings tabs", () => {
+    expect(nextDrawerPage("waypoints", "next")).toBe("storyline");
+    expect(nextDrawerPage("storyline", "next")).toBe("settings");
+    expect(nextDrawerPage("settings", "next")).toBe("waypoints");
+    expect(nextDrawerPage("settings", "previous")).toBe("storyline");
+    expect(nextDrawerPage("waypoints", "previous")).toBe("settings");
   });
 
   test("keeps settings as a draft until it validates, and resets cleanly", () => {

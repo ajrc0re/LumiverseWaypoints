@@ -12,12 +12,30 @@ import {
   approximatePromptTokenCount,
   formatPromptCount,
   greetingPickerOptions,
+  moveStorylineStop,
+  reconcileStorylineDraft,
+  resetStorylineOrder,
   shouldRefreshDrawer,
+  storylineDraftDirty,
+  storylineDraftFromSaved,
+  storylineDraftRoute,
+  storylineDraftStops,
+  toggleStorylineStop,
+  type DrawerPage,
   type GreetingPickerKind,
+  type StorylineDraft,
 } from "./frontend-model";
 import { handoffTag, overrideTag } from "./prompt";
+import { describePosition, sameRoute } from "./storyline";
 import { waypointStyles } from "./styles";
-import type { Greeting, GreetingSelection, WaypointSettings, WaypointsView } from "./types";
+import type {
+  Greeting,
+  GreetingSelection,
+  StorylineCharacterView,
+  WaypointSettings,
+  WaypointsView,
+} from "./types";
+import { isRecord } from "./util";
 
 type ComponentHandle = { destroy(): void };
 
@@ -32,9 +50,6 @@ function element<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function safeRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
@@ -66,6 +81,28 @@ function greetingLabel(greeting: Greeting): string {
   const firstLine = greeting.text.replace(/\s+/g, " ").slice(0, 86);
   return greeting.characterName + " — greeting " + String(greeting.greetingIndex + 1) + (firstLine ? ": " + firstLine : "");
 }
+
+interface ConnectionOption {
+  id: string;
+  name: string;
+  model: string;
+  isDefault: boolean;
+}
+
+function asConnections(value: unknown): ConnectionOption[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => isRecord(entry) && typeof entry.id === "string"
+    ? [{
+      id: entry.id,
+      name: typeof entry.name === "string" ? entry.name : entry.id,
+      model: typeof entry.model === "string" ? entry.model : "",
+      isDefault: entry.isDefault === true,
+    }]
+    : []);
+}
+
+/** Overview generation runs a full model call, so it gets far longer than ordinary requests. */
+const GENERATION_TIMEOUT_MS = 10 * 60_000;
 
 function compactPreview(value: string, limit = 580): string {
   return value.length > limit ? value.slice(0, limit) + "…" : value;
@@ -105,7 +142,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     actionBarMount.append(actionBarButton);
   }
 
-  let page: "waypoints" | "settings" = "waypoints";
+  let page: DrawerPage = "waypoints";
   let view: WaypointsView | null = null;
   let draft = cloneSettingsDraft(DEFAULT_SETTINGS);
   let draftInitialized = false;
@@ -133,9 +170,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let extrasActions: SpindleInputBarActionHandle[] = [];
   let pickerModal: SpindleModalHandle | undefined;
   let pickerOpen = false;
-  let promptCountContent = "";
-  let promptCountDisplay: string | null = null;
-  let promptCountSequence = 0;
+  const storyDrafts = new Map<string, StorylineDraft>();
+  const openStoryPreviews = new Set<string>();
+  let storyCharacterId: string | null = null;
+  let generatingCharacterId: string | null = null;
+  let connections: ConnectionOption[] | undefined;
+  let connectionsLoading = false;
   const pending = new Map<string, {
     resolve: (value: unknown) => void;
     reject: (reason: Error) => void;
@@ -149,14 +189,14 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     componentHandles = [];
   }
 
-  function rpc<T = unknown>(action: string, input: unknown = {}): Promise<T> {
+  function rpc<T = unknown>(action: string, input: unknown = {}, timeoutMs = 30_000): Promise<T> {
     if (destroyed) return Promise.reject(new Error("Waypoints is closed."));
     const requestId = "wp-" + String(++sequence) + "-" + Date.now().toString(36);
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(requestId);
         reject(new Error("Waypoints did not respond in time."));
-      }, 30_000);
+      }, timeoutMs);
       pending.set(requestId, { resolve: (value) => resolve(value as T), reject, timer });
       try {
         ctx.sendToBackend({ type: "waypoints:request", requestId, action, input });
@@ -198,7 +238,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     view = null;
     busy = false;
     setNotice("");
-    refreshPromptCount("");
+    promptCounter.refresh("");
+    storylineCounter.refresh("");
+    generatingCharacterId = null;
     pickerModal?.dismiss();
     for (const request of pending.values()) {
       clearTimeout(request.timer);
@@ -302,37 +344,48 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     });
   }
 
-  function refreshPromptCount(content: string): void {
-    if (!content) {
-      promptCountContent = "";
-      promptCountDisplay = null;
-      promptCountSequence += 1;
-      return;
-    }
-    if (content === promptCountContent && promptCountDisplay !== null) return;
-
-    const sequenceAtStart = ++promptCountSequence;
-    const characterCount = content.length;
-    promptCountContent = content;
-    promptCountDisplay = "Counting… / " + String(characterCount) + " Characters";
-
-    void (async () => {
-      let tokenCount = approximatePromptTokenCount(characterCount);
-      let approximate = true;
-      try {
-        const result = ctx.tokens ? await ctx.tokens.countText(content) : undefined;
-        if (result && Number.isFinite(result.total_tokens)) {
-          tokenCount = result.total_tokens;
-          approximate = result.approximate || result.tokenizer_id === null;
+  /** Counts tokens for one prompt shown on one drawer page, re-rendering only that page. */
+  function tokenCounter(pageName: DrawerPage) {
+    let counted = "";
+    let display: string | null = null;
+    let countSequence = 0;
+    return {
+      display(content: string): string {
+        return display ?? ("Counting… / " + String(content.length) + " Characters");
+      },
+      refresh(content: string): void {
+        if (!content) {
+          counted = "";
+          display = null;
+          countSequence += 1;
+          return;
         }
-      } catch {
-        // The local fallback remains visibly approximate when token counting is unavailable.
-      }
-      if (destroyed || sequenceAtStart !== promptCountSequence || promptCountContent !== content) return;
-      promptCountDisplay = formatPromptCount(tokenCount, characterCount, approximate);
-      if (page === "waypoints") render();
-    })();
+        if (content === counted && display !== null) return;
+        const sequenceAtStart = ++countSequence;
+        const characterCount = content.length;
+        counted = content;
+        display = "Counting… / " + String(characterCount) + " Characters";
+        void (async () => {
+          let tokenCount = approximatePromptTokenCount(characterCount);
+          let approximate = true;
+          try {
+            const result = ctx.tokens ? await ctx.tokens.countText(content) : undefined;
+            if (result && Number.isFinite(result.total_tokens)) {
+              tokenCount = result.total_tokens;
+              approximate = result.approximate || result.tokenizer_id === null;
+            }
+          } catch {
+            // The local fallback remains visibly approximate when token counting is unavailable.
+          }
+          if (destroyed || sequenceAtStart !== countSequence || counted !== content) return;
+          display = formatPromptCount(tokenCount, characterCount, approximate);
+          if (page === pageName) render();
+        })();
+      },
+    };
   }
+  const promptCounter = tokenCounter("waypoints");
+  const storylineCounter = tokenCounter("storyline");
 
   function updateDraftValidation(target: HTMLElement): void {
     const result = draftValidation(draft);
@@ -382,7 +435,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           draft = cloneSettingsDraft(loaded.settings);
           draftInitialized = true;
         }
-        refreshPromptCount(loaded.prompt.content);
+        promptCounter.refresh(loaded.prompt.content);
+        storylineCounter.refresh(loaded.storyline.prompt.content);
+        syncStoryDrafts();
         render();
         syncActionControls();
         syncHud();
@@ -624,7 +679,14 @@ export function setup(ctx: SpindleFrontendContext): () => void {
           { key: "choose-next", label: "Choose next greeting", disabled: greetingPickerOptions("next", view).length === 0 },
           { key: "force", label: "Force next greeting", disabled: !view.upcoming || busy },
           { key: "undo", label: "Undo last insertion", disabled: !view.canUndo || busy },
+          {
+            key: "story-overview",
+            label: view.storyline.overviewEnabled ? "Turn narrative overview off for this chat" : "Turn narrative overview on for this chat",
+            active: view.storyline.overviewEnabled,
+            disabled: !view.chatId || !view.storyline.characters.some((entry) => entry.overview.trim()),
+          },
           { key: "divider", label: "", type: "divider" },
+          { key: "open-storyline", label: "Open storyline designer" },
           { key: "open", label: "Open Waypoints drawer" },
         ],
       });
@@ -640,7 +702,14 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     else if (result.selectedKey === "choose-next") openPickerSafely("next");
     else if (result.selectedKey === "force") void safely(forceTransition);
     else if (result.selectedKey === "undo") void safely(undoTransition);
-    else if (result.selectedKey === "open") tab.activate();
+    else if (result.selectedKey === "story-overview") {
+      const enabled = !view.storyline.overviewEnabled;
+      void safely(() => setStoryToggle("set-story-overview", enabled));
+    } else if (result.selectedKey === "open-storyline") {
+      page = "storyline";
+      render();
+      tab.activate();
+    } else if (result.selectedKey === "open") tab.activate();
   }
 
   function syncActionControls(): void {
@@ -747,6 +816,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     tabs.setAttribute("role", "tablist");
     for (const descriptor of [
       ["waypoints", "Waypoints"],
+      ["storyline", "Storyline"],
       ["settings", "Settings"],
     ] as const) {
       const targetPage = descriptor[0];
@@ -819,6 +889,17 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     heading.append(headingText);
     heading.append(button("Refresh", refresh));
     status.append(heading, element("p", "wp-muted", view.status));
+    const storyPosition = view.storyline.prompt.position;
+    const routed = Object.keys(view.routes).length > 0;
+    if (view.chatId && storyPosition && storyPosition.total > 0 && (routed || view.storyline.prompt.ready)) {
+      const storyLine = element("p", "wp-muted");
+      storyLine.append(
+        (routed ? "Following the storyline route. " : "")
+        + (describePosition(storyPosition) || "")
+        + (view.storyline.prompt.ready ? " Narrative overview is on." : ""),
+      );
+      status.append(storyLine);
+    }
     if (view.chatId) {
       const chatRow = element("div", "wp-character");
       chatRow.append(element("div", "wp-character-name", "Use Waypoints in this chat"));
@@ -908,7 +989,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       promptText + " Role: " + view.prompt.role + ". Depth: " + String(view.prompt.insertionDepth) + ".",
     ));
     if (view.prompt.content) {
-      prompt.append(element("div", "wp-prompt-count", promptCountDisplay ?? ("Counting… / " + String(view.prompt.content.length) + " Characters")));
+      prompt.append(element("div", "wp-prompt-count", promptCounter.display(view.prompt.content)));
       const details = element("details", "wp-diagnostics");
       details.append(element("summary", "", "Show rendered prompt"));
       details.append(element("pre", "wp-preview", view.prompt.content));
@@ -941,6 +1022,378 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
     if (view.settings.floatingControls && !canShowHud(true, view.grantedPermissions)) {
       parent.append(element("div", "wp-alert", "Floating controls are enabled in Settings, but ui_panels permission is not granted. The drawer still works."));
+    }
+  }
+
+  /** Keep each character's draft in step with what was saved, without losing local edits. */
+  function syncStoryDrafts(): void {
+    if (!view) return;
+    for (const saved of view.storyline.characters) {
+      storyDrafts.set(saved.characterId, reconcileStorylineDraft(storyDrafts.get(saved.characterId), saved, view.greetings));
+    }
+    const ids = view.storyline.characters.map((entry) => entry.characterId);
+    if (!storyCharacterId || !ids.includes(storyCharacterId)) {
+      storyCharacterId = view.storyline.prompt.characterId && ids.includes(view.storyline.prompt.characterId)
+        ? view.storyline.prompt.characterId
+        : ids[0] ?? null;
+    }
+  }
+
+  function storySaved(): StorylineCharacterView | null {
+    return view?.storyline.characters.find((entry) => entry.characterId === storyCharacterId) ?? null;
+  }
+
+  function storyDraft(): StorylineDraft | null {
+    const saved = storySaved();
+    if (!saved || !view) return null;
+    let draft = storyDrafts.get(saved.characterId);
+    if (!draft) {
+      draft = storylineDraftFromSaved(saved, view.greetings);
+      storyDrafts.set(saved.characterId, draft);
+    }
+    return draft;
+  }
+
+  function isStoryGenerating(saved: StorylineCharacterView | null): boolean {
+    return Boolean(saved && (generatingCharacterId === saved.characterId || saved.generating));
+  }
+
+  async function saveStoryline(): Promise<void> {
+    const saved = storySaved();
+    const draft = storyDraft();
+    if (!saved || !draft || !view) throw new Error("Open a chat first.");
+    const route = storylineDraftRoute(draft, view.greetings);
+    if (!storylineDraftStops(draft).length) throw new Error("Include at least one greeting in the storyline.");
+    await rpc("save-storyline", {
+      chatId: requireCurrentChatId(),
+      characterId: saved.characterId,
+      storyline: { route, notes: draft.notes, overview: draft.overview },
+    });
+    storyDrafts.delete(saved.characterId);
+    await load();
+    setNotice("Storyline saved for every chat with this character.");
+  }
+
+  async function deleteStoryline(): Promise<void> {
+    const saved = storySaved();
+    if (!saved) throw new Error("Open a chat first.");
+    await rpc("delete-storyline", { chatId: requireCurrentChatId(), characterId: saved.characterId });
+    storyDrafts.delete(saved.characterId);
+    await load();
+    setNotice("Storyline deleted. Waypoints follows card order again.");
+  }
+
+  async function setStoryToggle(action: "set-story-route" | "set-story-overview", enabled: boolean): Promise<void> {
+    await rpc(action, { chatId: requireCurrentChatId(), enabled });
+    await load();
+  }
+
+  async function generateStoryline(): Promise<void> {
+    const saved = storySaved();
+    const draft = storyDraft();
+    if (!saved || !draft || !view || busy || isStoryGenerating(saved)) return;
+    if (!storylineDraftStops(draft).length) {
+      setNotice("Include at least one greeting in the storyline.", true);
+      render();
+      return;
+    }
+    const version = selectionVersion;
+    const characterId = saved.characterId;
+    generatingCharacterId = characterId;
+    setNotice("");
+    render();
+    try {
+      const chatId = requireCurrentChatId();
+      await rpc("generate-storyline", {
+        chatId,
+        characterId,
+        storyline: { route: storylineDraftRoute(draft, view.greetings), notes: draft.notes },
+      }, GENERATION_TIMEOUT_MS);
+      if (!isCurrentSelection(version)) return;
+      // The backend saved the route, guidance, and overview together.
+      storyDrafts.delete(characterId);
+      if (generatingCharacterId === characterId) generatingCharacterId = null;
+      await load();
+      setNotice("Narrative overview generated and saved.");
+    } catch (error) {
+      if (isCurrentSelection(version)) setNotice(error instanceof Error ? error.message : String(error), true);
+    } finally {
+      if (generatingCharacterId === characterId) generatingCharacterId = null;
+      if (isCurrentSelection(version)) {
+        render();
+        syncHud();
+      }
+    }
+  }
+
+  function cancelStoryline(characterId: string): void {
+    void rpc("cancel-storyline", { characterId }).catch(() => undefined);
+  }
+
+  function renderStoryRoute(parent: HTMLElement, draft: StorylineDraft, generating: boolean): void {
+    if (!view) return;
+    const currentView = view;
+    const stops = storylineDraftStops(draft);
+    const route = element("section", "wp-section");
+    const heading = element("div", "wp-row between");
+    heading.append(element("h3", "", "Route"));
+    heading.append(element("span", "wp-kicker", String(stops.length) + " of " + String(draft.order.length) + " greetings"));
+    route.append(heading);
+    route.append(element("p", "wp-help", "Tick the greetings this storyline visits and arrange them in story order. Unticked greetings are skipped when Waypoints picks the next greeting."));
+    const list = element("ol", "wp-story-list");
+    const greetingsByIndex = new Map(currentView.greetings
+      .filter((greeting) => greeting.characterId === draft.characterId)
+      .map((greeting) => [greeting.greetingIndex, greeting]));
+    const update = (next: StorylineDraft) => {
+      storyDrafts.set(draft.characterId, next);
+      render();
+    };
+    draft.order.forEach((index, position) => {
+      const greeting = greetingsByIndex.get(index);
+      if (!greeting) return;
+      const included = !draft.excluded.includes(index);
+      const row = element("li", "wp-story-row" + (included ? "" : " excluded"));
+      const toggle = element("input", "wp-story-check");
+      toggle.type = "checkbox";
+      toggle.checked = included;
+      toggle.disabled = busy || generating;
+      toggle.setAttribute("aria-label", "Include greeting " + String(index + 1) + " in the storyline");
+      toggle.onchange = () => update(toggleStorylineStop(draft, index, toggle.checked));
+      const step = element("span", "wp-story-step", included ? String(stops.indexOf(index) + 1) : "–");
+      const body = element("div", "wp-story-body");
+      const title = element("div", "wp-story-title");
+      title.append(element("span", "wp-character-name", "Greeting " + String(index + 1)));
+      if (currentView.active?.characterId === draft.characterId && currentView.active.greetingIndex === index) {
+        title.append(element("span", "wp-badge", "Current"));
+      }
+      if (currentView.upcoming?.characterId === draft.characterId && currentView.upcoming.greetingIndex === index) {
+        title.append(element("span", "wp-badge next", "Next"));
+      }
+      body.append(title);
+      body.append(element("div", "wp-story-snippet", greeting.text.replace(/\s+/g, " ").slice(0, 140)));
+      const previewKey = draft.characterId + ":" + String(index);
+      const details = element("details", "wp-story-preview");
+      details.open = openStoryPreviews.has(previewKey);
+      details.ontoggle = () => {
+        if (details.open) openStoryPreviews.add(previewKey);
+        else openStoryPreviews.delete(previewKey);
+      };
+      details.append(element("summary", "", "Preview"), element("pre", "wp-preview", compactPreview(greeting.text, 2400)));
+      body.append(details);
+      const moves = element("div", "wp-story-moves");
+      const up = element("button", "wp-button wp-icon-button", "↑");
+      up.type = "button";
+      up.title = "Move earlier";
+      up.setAttribute("aria-label", "Move greeting " + String(index + 1) + " earlier");
+      up.disabled = busy || generating || position === 0;
+      up.onclick = () => update(moveStorylineStop(draft, index, -1));
+      const down = element("button", "wp-button wp-icon-button", "↓");
+      down.type = "button";
+      down.title = "Move later";
+      down.setAttribute("aria-label", "Move greeting " + String(index + 1) + " later");
+      down.disabled = busy || generating || position === draft.order.length - 1;
+      down.onclick = () => update(moveStorylineStop(draft, index, 1));
+      moves.append(up, down);
+      row.append(toggle, step, body, moves);
+      list.append(row);
+    });
+    route.append(list);
+    const actions = element("div", "wp-actions");
+    actions.append(
+      button("Include all", () => update({ ...draft, excluded: [] }), "", generating || !draft.excluded.length),
+      button("Reset to card order", () => update(resetStorylineOrder(draft, currentView.greetings)), "", generating),
+    );
+    route.append(actions);
+    parent.append(route);
+  }
+
+  function renderStoryChat(parent: HTMLElement, saved: StorylineCharacterView): void {
+    if (!view) return;
+    const section = element("section", "wp-section");
+    section.append(element("h3", "", "This chat"));
+    section.append(element("p", "wp-help", "The storyline is shared by every chat with this character. These switches change only the open chat."));
+    const switches: Array<[string, string, boolean, "set-story-route" | "set-story-overview"]> = [
+      ["Follow the storyline route", "Waypoints picks the next greeting from the route instead of card order.", view.storyline.routeEnabled, "set-story-route"],
+      ["Add the narrative overview to prompts", saved.overview.trim() ? "Gives the model the whole journey, not just the next greeting." : "Generate or write an overview below first.", view.storyline.overviewEnabled, "set-story-overview"],
+    ];
+    for (const [label, help, checked, action] of switches) {
+      const row = element("div", "wp-character");
+      const names = element("div");
+      names.append(element("div", "wp-character-name", label), element("div", "wp-help", help));
+      const mount = element("div", "wp-native");
+      row.append(names, mount);
+      section.append(row);
+      const version = selectionVersion;
+      componentHandles.push(ctx.components.mountSwitch(mount, {
+        checked,
+        ariaLabel: label,
+        onChange: (value) => {
+          if (!isCurrentSelection(version)) return;
+          void safely(() => setStoryToggle(action, value));
+        },
+      }));
+    }
+    const prompt = view.storyline.prompt;
+    if (prompt.characterId === saved.characterId) {
+      const position = describePosition(prompt.position);
+      if (position) section.append(element("p", "wp-muted", position));
+    }
+    parent.append(section);
+  }
+
+  function renderStoryOverview(parent: HTMLElement, saved: StorylineCharacterView, draft: StorylineDraft, generating: boolean): void {
+    if (!view) return;
+    const currentView = view;
+    const section = element("section", "wp-section");
+    section.append(element("h3", "", "Narrative overview"));
+    section.append(element("p", "wp-help", "A meta prompt that describes the whole journey, so the model can foreshadow and keep continuity instead of only seeing the next greeting. Generate it from the route, then edit it freely."));
+    const dirtyLabel = element("div", "wp-validation");
+    const saveButton = button("Save storyline", () => safely(saveStoryline), "primary", generating);
+    const discardButton = button("Discard changes", () => {
+      storyDrafts.set(saved.characterId, storylineDraftFromSaved(saved, currentView.greetings));
+      render();
+    }, "", generating);
+    const updateDirty = () => {
+      const dirty = storylineDraftDirty(draft, saved, currentView.greetings);
+      dirtyLabel.className = "wp-validation " + (dirty ? "bad" : "good");
+      dirtyLabel.textContent = dirty ? "Unsaved changes." : saved.updatedAt === null ? "Nothing saved yet for this character." : "Saved.";
+      saveButton.disabled = busy || generating || !dirty;
+      discardButton.disabled = busy || generating || !dirty;
+    };
+
+    addField(section, "Author guidance", "Optional notes for the generator, such as genre, themes, or how the arc should feel.", (target) =>
+      ctx.components.mountTextArea(target, {
+        value: draft.notes,
+        rows: 3,
+        disabled: generating,
+        placeholder: "Slow-burn romance; keep the mystery of the lighthouse unresolved until the end.",
+        ariaLabel: "Author guidance",
+        onChange: (value) => {
+          draft.notes = value;
+          updateDirty();
+        },
+      }),
+    );
+
+    const generateRow = element("div", "wp-actions");
+    if (generating) {
+      generateRow.append(element("span", "wp-generating", "Generating the narrative overview…"));
+      const cancel = element("button", "wp-button danger", "Cancel");
+      cancel.type = "button";
+      cancel.onclick = () => cancelStoryline(saved.characterId);
+      generateRow.append(cancel);
+    } else {
+      const canGenerate = currentView.grantedPermissions.includes("generation");
+      generateRow.append(button(
+        saved.overview.trim() ? "Regenerate overview" : "Generate overview",
+        () => generateStoryline(),
+        "primary",
+        !canGenerate || !storylineDraftStops(draft).length,
+      ));
+      if (!canGenerate) generateRow.append(element("span", "wp-help", "Needs the generation permission."));
+    }
+    section.append(generateRow);
+
+    const routeChanged = !sameRoute(storylineDraftRoute(draft, currentView.greetings), saved.route);
+    if (saved.overview.trim() && (saved.stale || routeChanged)) {
+      section.append(element("div", "wp-alert", routeChanged
+        ? "The route has changed since this overview was written. Regenerate it so the journey matches."
+        : "The route's greetings have changed on the character card since this overview was generated. Regenerate it to match."));
+    }
+    if (saved.generatedAt) {
+      section.append(element("p", "wp-help", "Last generated " + new Date(saved.generatedAt).toLocaleString() + "."));
+    }
+
+    addField(section, "Overview", "Saved per character. Edits here are used as-is.", (target) =>
+      ctx.components.mountTextArea(target, {
+        value: draft.overview,
+        rows: 14,
+        disabled: generating,
+        placeholder: "Generate an overview, or write your own description of the journey.",
+        ariaLabel: "Narrative overview",
+        onChange: (value) => {
+          draft.overview = value;
+          updateDirty();
+        },
+      }),
+    );
+
+    const prompt = currentView.storyline.prompt;
+    if (prompt.characterId === saved.characterId) {
+      section.append(element("p", "wp-muted", prompt.ready
+        ? (currentView.settings.autoPrompt ? "Auto-prompt is ON: the overview is added to every generation in this chat." : "Auto-prompt is OFF; add {{waypoints_storyline}} to a Loom preset to inject it.")
+        : (prompt.reason ?? "The overview is not active.")));
+      if (prompt.content) {
+        section.append(element("div", "wp-prompt-count", storylineCounter.display(prompt.content)));
+        const details = element("details", "wp-diagnostics");
+        details.append(element("summary", "", "Show rendered overview prompt"), element("pre", "wp-preview", prompt.content));
+        section.append(details);
+      }
+    } else if (saved.overview.trim()) {
+      section.append(element("p", "wp-muted", "In this group chat, the overview in prompts belongs to the character whose greeting is current."));
+    }
+
+    const footer = element("div", "wp-actions");
+    footer.append(saveButton, discardButton);
+    if (saved.updatedAt !== null) {
+      footer.append(button("Delete storyline", () => safely(deleteStoryline), "danger", generating));
+    }
+    section.append(dirtyLabel, footer);
+    updateDirty();
+    parent.append(section);
+  }
+
+  function renderStoryline(parent: HTMLElement): void {
+    if (!view) {
+      parent.append(element("div", "wp-card", "Loading Waypoints…"));
+      return;
+    }
+    const saved = storySaved();
+    const draft = storyDraft();
+    if (!view.chatId || !saved || !draft) {
+      parent.append(element("div", "wp-card", view.chatId ? "This chat has no characters with greetings." : view.status));
+      return;
+    }
+    const generating = isStoryGenerating(saved);
+    const intro = element("section", "wp-card");
+    intro.append(element("div", "wp-kicker", "Storyline designer"));
+    const name = view.characters.find((character) => character.id === saved.characterId)?.name || "Unnamed character";
+    intro.append(element("h3", "", name + "'s storyline"));
+    intro.append(element("p", "wp-muted", "Choose which greetings the story visits and in what order, then generate a narrative overview of the whole journey. Saved per character for every chat with them."));
+    if (view.isGroupChat && view.storyline.characters.length > 1) {
+      const version = selectionVersion;
+      addField(intro, "Character", "Each group member has their own storyline.", (target) =>
+        ctx.components.mountSelect(target, {
+          value: saved.characterId,
+          options: view!.storyline.characters.map((entry) => ({
+            value: entry.characterId,
+            label: view!.characters.find((character) => character.id === entry.characterId)?.name || "Unnamed character",
+          })),
+          onChange: (value) => {
+            if (!isCurrentSelection(version)) return;
+            storyCharacterId = value;
+            render();
+          },
+        }),
+      );
+    }
+    parent.append(intro);
+    renderStoryRoute(parent, draft, generating);
+    renderStoryChat(parent, saved);
+    renderStoryOverview(parent, saved, draft, generating);
+  }
+
+  async function loadConnections(): Promise<void> {
+    if (connections || connectionsLoading) return;
+    connectionsLoading = true;
+    const version = selectionVersion;
+    try {
+      connections = asConnections(await rpc("list-connections"));
+    } catch {
+      connections = [];
+    } finally {
+      connectionsLoading = false;
+      if (isCurrentSelection(version) && page === "settings") render();
     }
   }
 
@@ -1063,7 +1516,81 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       "wp-help",
       "Pre-run council tools can also use {{altMessage1}}, {{altMessage2}}, and so on for this character's alternate greetings. {{altMessages}} returns them as a JSON array; the standard {{firstMessage}} is separate. Higher altMessage indices are unregistered when switching to a character with fewer alternate greetings. {{nextMessages}} returns the choices offered by Waypoints' next-greeting picker (only later greetings in solo chats). {{currentMessage}} and {{nextMessage}} return the selected current and upcoming greetings.",
     ));
+    loomHelp.append(element(
+      "p",
+      "wp-help",
+      "The narrative overview has its own pair: {{if::{{waypoints_storyline_active}}}}{{waypoints_storyline}}{{/if}}. It is active when the open chat has the overview switched on in the Storyline tab.",
+    ));
     settings.append(loomHelp);
+
+    settings.append(element("div", "wp-divider"));
+    settings.append(element("h4", "", "Storyline"));
+    addField(settings, "Overview prompt template", "Wraps a character's narrative overview when it is added to prompts. Required: {{storyline_overview}}. Optional: {{storyline_position}} and {{character_name}}.", (target) =>
+      ctx.components.mountTextArea(target, {
+        value: draft.storylineTemplate,
+        rows: 9,
+        ariaLabel: "Overview prompt template",
+        onChange: (value) => {
+          draft.storylineTemplate = value;
+          updateDraftValidation(validation);
+        },
+      }),
+    );
+    addField(settings, "Overview generator instructions", "Sent to the model by Generate overview. Required: {{waypoints}}. Optional: {{character_name}}, {{character_description}}, {{character_personality}}, {{character_scenario}}, {{author_notes}}, and {{waypoint_count}}.", (target) =>
+      ctx.components.mountTextArea(target, {
+        value: draft.storylineGeneratorTemplate,
+        rows: 12,
+        ariaLabel: "Overview generator instructions",
+        onChange: (value) => {
+          draft.storylineGeneratorTemplate = value;
+          updateDraftValidation(validation);
+        },
+      }),
+    );
+    const storyGrid = element("div", "wp-grid");
+    settings.append(storyGrid);
+    addField(storyGrid, "Overview insertion depth", "Uses the prompt role above. At the same depth as the scene prompt, the overview comes first.", (target) =>
+      ctx.components.mountNumericInput(target, {
+        value: draft.storylineInsertionDepth,
+        integer: true,
+        min: 0,
+        max: 9999,
+        onChange: (value) => {
+          if (value !== null) draft.storylineInsertionDepth = value;
+          updateDraftValidation(validation);
+        },
+      }),
+    );
+    addField(storyGrid, "Generator limit per greeting", "Characters of each greeting sent to the generator, after exclusion filtering.", (target) =>
+      ctx.components.mountNumericInput(target, {
+        value: draft.storylineWaypointCharLimit,
+        integer: true,
+        min: 100,
+        max: 100000,
+        onChange: (value) => {
+          if (value !== null) draft.storylineWaypointCharLimit = value;
+          updateDraftValidation(validation);
+        },
+      }),
+    );
+    if (!connections) void loadConnections();
+    const connectionOptions = [{ value: "", label: "Default connection" }, ...(connections ?? []).map((connection) => ({
+      value: connection.id,
+      label: connection.name + (connection.model ? " — " + connection.model : "") + (connection.isDefault ? " (default)" : ""),
+    }))];
+    if (draft.storylineConnectionId && !connectionOptions.some((option) => option.value === draft.storylineConnectionId)) {
+      connectionOptions.push({ value: draft.storylineConnectionId, label: connections ? "Unavailable connection" : "Loading connections…" });
+    }
+    addField(storyGrid, "Generator connection", "Use a cheaper or stronger model for overviews than for chat.", (target) =>
+      ctx.components.mountSelect(target, {
+        value: draft.storylineConnectionId,
+        options: connectionOptions,
+        onChange: (value) => {
+          draft.storylineConnectionId = value;
+          updateDraftValidation(validation);
+        },
+      }),
+    );
 
     settings.append(element("div", "wp-divider"));
     settings.append(element("h4", "", "Handoff"));
@@ -1195,7 +1722,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     componentHandles.push(ctx.components.mountCheckbox(extrasTarget, {
       checked: draft.extrasActions,
       label: "Show Waypoints actions in the Extras menu",
-      hint: "Adds Toggle, Undo, and Force entries under Lumiverse's native Extras popover.",
+      hint: "Adds Toggle, Choose current greeting, Choose next greeting, Undo, and Force entries under Lumiverse's native Extras popover.",
       onChange: (checked) => {
         draft.extrasActions = checked;
         updateDraftValidation(validation);
@@ -1287,6 +1814,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     pageRoot.setAttribute("role", "tabpanel");
     root.append(pageRoot);
     if (page === "waypoints") renderDashboard(pageRoot);
+    else if (page === "storyline") renderStoryline(pageRoot);
     else renderSettings(pageRoot);
   }
 

@@ -8,6 +8,8 @@ export const WAYPOINTS_ALT_MESSAGES_MACRO = "altMessages";
 export const WAYPOINTS_NEXT_MESSAGES_MACRO = "nextMessages";
 export const WAYPOINTS_CURRENT_MESSAGE_MACRO = "currentMessage";
 export const WAYPOINTS_NEXT_MESSAGE_MACRO = "nextMessage";
+export const WAYPOINTS_STORYLINE_ACTIVE_MACRO = "waypoints_storyline_active";
+export const WAYPOINTS_STORYLINE_MACRO = "waypoints_storyline";
 
 export interface WaypointMacroIdentity {
   chatId?: string;
@@ -127,6 +129,23 @@ export function registerWaypointsLoomMacros(
     "string",
     resolver,
     (values) => values.nextMessage,
+  );
+
+  register(
+    api,
+    WAYPOINTS_STORYLINE_ACTIVE_MACRO,
+    "Returns true when this chat's narrative overview is enabled and has content.",
+    "boolean",
+    resolver,
+    (values) => values.storylineActive ? "true" : "false",
+  );
+  register(
+    api,
+    WAYPOINTS_STORYLINE_MACRO,
+    "Returns the rendered Waypoints narrative overview (storyline) prompt for this chat.",
+    "string",
+    resolver,
+    (values) => values.storylineActive ? values.storyline : "",
   );
 
   let registeredAlternateGreetingCount = 0;

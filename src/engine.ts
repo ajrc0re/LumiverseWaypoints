@@ -7,10 +7,30 @@ import type {
   SpindleAPI,
 } from "lumiverse-spindle-types";
 import { DEFAULT_SETTINGS, settingsFromStorage, validateSettings } from "./config";
-import { insertAtDepth, renderPrompt, stripHandoffTags } from "./prompt";
+import { insertAtDepths, renderPrompt, stripHandoffTags } from "./prompt";
+import {
+  STORYLINE_NOTES_LIMIT,
+  STORYLINE_OVERVIEW_LIMIT,
+  cardOrder,
+  effectiveRoute,
+  emptyStoryline,
+  generatedText,
+  isOverviewStale,
+  parseStoryline,
+  renderGeneratorPrompt,
+  renderStorylinePrompt,
+  resolveRoute,
+  routeEntries,
+  routeSignature,
+  sameRoute,
+  storylinePath,
+  storylinePosition,
+} from "./storyline";
+import { hashText, isRecord } from "./util";
 import {
   addRecentTransition,
   buildGreetingContext,
+  chatRoutes,
   consumePendingHandoff,
   greetingForSelection,
   groupCharacterIds,
@@ -29,13 +49,16 @@ import {
   SETTINGS_PATH,
 } from "./types";
 import type {
-  CharacterGreetingSource,
+  CharacterStoryline,
   Greeting,
   GreetingContext,
   GreetingSelection,
   HandoffExtraMetadata,
   InsertedGreetingMetadata,
   PromptStatus,
+  StorylineCharacterView,
+  StorylinePromptStatus,
+  StorylineView,
   TransitionJournal,
   TransitionResult,
   WaypointChatState,
@@ -46,6 +69,43 @@ import type {
 
 const AUTOMATIC_PERMISSIONS = ["characters", "chats", "chat_mutation", "generation"];
 const CONTEXT_PERMISSIONS = ["characters", "chats"];
+const STORYLINE_GENERATION_PERMISSIONS = ["characters", "chats", "generation"];
+
+export interface StorylineDraftInput {
+  /** Greeting indices in story order. Empty or full card order means "every greeting in card order". */
+  route: number[];
+  notes: string;
+  overview?: string;
+}
+
+export interface ConnectionChoice {
+  id: string;
+  name: string;
+  model: string;
+  isDefault: boolean;
+}
+
+function emptyLoomValues(): WaypointLoomValues {
+  return {
+    active: false,
+    content: "",
+    altMessages: [],
+    nextMessages: [],
+    currentMessage: "",
+    nextMessage: "",
+    storylineActive: false,
+    storyline: "",
+  };
+}
+
+function emptyStorylineView(reason: string): StorylineView {
+  return {
+    routeEnabled: true,
+    overviewEnabled: true,
+    characters: [],
+    prompt: { ready: false, content: "", characterId: null, position: null, reason },
+  };
+}
 
 export interface HandoffSignal {
   chatId: string;
@@ -63,10 +123,6 @@ interface InsertedMessage {
   previousMessageId?: string;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -79,21 +135,10 @@ function journalId(): string {
   return "wp-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
 }
 
-export function hashText(value: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
-}
+export { hashText };
 
 function selected(selection: GreetingSelection | null): GreetingSelection | null {
   return selection ? { characterId: selection.characterId, greetingIndex: selection.greetingIndex } : null;
-}
-
-function sourceCharacters(context: GreetingContext): CharacterGreetingSource[] {
-  return context.characters;
 }
 
 function asInsertedMetadata(value: unknown): InsertedGreetingMetadata | null {
@@ -143,6 +188,8 @@ export class WaypointEngine {
   private settingsCache: WaypointSettings | null = null;
   private readonly queues = new Map<string, Promise<unknown>>();
   private diagnosticsLines: string[] = [];
+  private readonly storylineCache = new Map<string, CharacterStoryline | null>();
+  private readonly generations = new Map<string, AbortController>();
 
   constructor(
     private readonly api: SpindleAPI,
@@ -232,7 +279,33 @@ export class WaypointEngine {
     const ids = groupCharacterIds(chat);
     const loaded = await Promise.all(ids.map((characterId) => this.api.characters.get(characterId, this.userId)));
     const characters = loaded.filter((character): character is NonNullable<typeof character> => Boolean(character));
-    return buildGreetingContext(chat, characters);
+    const context = buildGreetingContext(chat, characters);
+    const storylines: Record<string, CharacterStoryline> = {};
+    const stored = await Promise.all(context.characterIds.map((characterId) => this.storyline(characterId)));
+    for (const storyline of stored) if (storyline) storylines[storyline.characterId] = storyline;
+    return { ...context, storylines };
+  }
+
+  /** Storylines are written only through this engine, so a per-user cache stays coherent. */
+  private async storyline(characterId: string): Promise<CharacterStoryline | null> {
+    if (this.storylineCache.has(characterId)) return clone(this.storylineCache.get(characterId) ?? null);
+    let parsed: CharacterStoryline | null = null;
+    try {
+      const stored = await this.api.userStorage.getJson<unknown>(storylinePath(characterId), {
+        fallback: null,
+        userId: this.userId,
+      });
+      parsed = parseStoryline(stored, characterId);
+    } catch {
+      parsed = null;
+    }
+    this.storylineCache.set(characterId, parsed);
+    return clone(parsed);
+  }
+
+  private async writeStoryline(storyline: CharacterStoryline): Promise<void> {
+    await this.api.userStorage.setJson(storylinePath(storyline.characterId), storyline, { userId: this.userId });
+    this.storylineCache.set(storyline.characterId, clone(storyline));
   }
 
   private alternateMessages(context: GreetingContext): string[] {
@@ -260,7 +333,7 @@ export class WaypointEngine {
     characterId: string,
   ): boolean {
     if (context.isGroupChat) return state.groupEnabledByCharacter[characterId] !== false;
-    const character = sourceCharacters(context).find((entry) => entry.id === characterId);
+    const character = context.characters.find((entry) => entry.id === characterId);
     const extensionData = character && isRecord(character.extensions?.[EXTENSION_ID])
       ? character.extensions?.[EXTENSION_ID]
       : null;
@@ -349,7 +422,7 @@ export class WaypointEngine {
       return;
     }
     state.active = selected(journal.target);
-    state.upcoming = nextGreetingForSelection(context.greetings, state.active);
+    state.upcoming = nextGreetingForSelection(context.greetings, state.active, chatRoutes(context, state));
     addRecentTransition(state, journal.eventKey, settings.recentTransitionLimit);
     consumePendingHandoff(state, journal.eventKey);
     if (journal.handoffKey) {
@@ -661,7 +734,7 @@ export class WaypointEngine {
       const state = reconcileChatState(await this.state(chatId), context);
       state.active = this.validateSelection(context, selection);
       if (state.active && (!state.upcoming || state.upcoming.characterId === state.active.characterId && state.upcoming.greetingIndex === state.active.greetingIndex)) {
-        state.upcoming = nextGreetingForSelection(context.greetings, state.active);
+        state.upcoming = nextGreetingForSelection(context.greetings, state.active, chatRoutes(context, state));
       }
       await this.persistState(chatId, state);
     });
@@ -691,8 +764,12 @@ export class WaypointEngine {
         state.groupEnabledByCharacter[characterId] = enabled;
         await this.persistState(chatId, state);
       } else {
+        // Extensions are shallow-merged per key, so keep any other Waypoints
+        // fields already stored on the card.
+        const character = context.characters.find((entry) => entry.id === characterId);
+        const existing = isRecord(character?.extensions?.[EXTENSION_ID]) ? character?.extensions?.[EXTENSION_ID] as Record<string, unknown> : {};
         await this.api.characters.update(characterId, {
-          extensions: { [EXTENSION_ID]: { enabled } },
+          extensions: { [EXTENSION_ID]: { ...existing, enabled } },
         }, this.userId);
       }
       this.note("enabled state changed for " + characterId);
@@ -714,23 +791,277 @@ export class WaypointEngine {
     });
   }
 
+
+  /** Per-chat switch: follow the character's storyline route instead of card order. */
+  async setStoryRoute(chatId: string, enabled: boolean): Promise<void> {
+    this.assertPermissions(CONTEXT_PERMISSIONS, "Changing this chat's storyline route");
+    await this.serial(chatId, async () => {
+      const context = await this.context(chatId);
+      const state = reconcileChatState(await this.state(chatId), context);
+      state.storyRoute = enabled;
+      // Re-plan from the current greeting so the new order applies immediately.
+      state.upcoming = nextGreetingForSelection(context.greetings, state.active, chatRoutes(context, state));
+      await this.persistState(chatId, state);
+      this.note("chat " + chatId + " storyline route " + (enabled ? "on" : "off"));
+    });
+  }
+
+  /** Per-chat switch: include the character's narrative overview in prompts. */
+  async setStoryOverview(chatId: string, enabled: boolean): Promise<void> {
+    this.assertPermissions(CONTEXT_PERMISSIONS, "Changing this chat's narrative overview");
+    await this.serial(chatId, async () => {
+      const context = await this.context(chatId);
+      const state = reconcileChatState(await this.state(chatId), context);
+      state.storyOverview = enabled;
+      await this.persistState(chatId, state);
+      this.note("chat " + chatId + " narrative overview " + (enabled ? "on" : "off"));
+    });
+  }
+
+  private storylineCharacter(context: GreetingContext, characterId: string) {
+    const character = context.characters.find((entry) => entry.id === characterId);
+    if (!character || !context.characterIds.includes(characterId)) throw new Error("That character is not in this chat.");
+    return character;
+  }
+
+  /** Validates a requested route against the card. Full card order is stored as the empty default. */
+  private normalizeRoute(context: GreetingContext, characterId: string, route: unknown): number[] {
+    const order = cardOrder(context.greetings, characterId);
+    if (!Array.isArray(route) || !route.length) return [];
+    const available = new Set(order);
+    const seen = new Set<number>();
+    const indices: number[] = [];
+    for (const value of route) {
+      if (!Number.isInteger(value) || !available.has(Number(value))) throw new Error("A storyline stop is not one of this character's greetings.");
+      if (seen.has(Number(value))) throw new Error("A greeting can appear only once in a storyline.");
+      seen.add(Number(value));
+      indices.push(Number(value));
+    }
+    return sameRoute(indices, order) ? [] : indices;
+  }
+
+  /**
+   * After a route change, the open chat re-plans its upcoming greeting from
+   * the current one. Other chats pick the new route up at their next handoff.
+   */
+  private async replanChat(chatId: string, characterId: string): Promise<void> {
+    await this.serial(chatId, async () => {
+      const context = await this.context(chatId);
+      const state = reconcileChatState(await this.state(chatId), context);
+      if (!state.storyRoute || state.active?.characterId !== characterId) return;
+      state.upcoming = nextGreetingForSelection(context.greetings, state.active, chatRoutes(context, state));
+      await this.persistState(chatId, state);
+    });
+  }
+
+  async saveStoryline(chatId: string, characterId: string, input: StorylineDraftInput): Promise<void> {
+    this.assertPermissions(CONTEXT_PERMISSIONS, "Saving a storyline");
+    const context = await this.serial(chatId, () => this.context(chatId));
+    this.storylineCharacter(context, characterId);
+    const indices = this.normalizeRoute(context, characterId, input.route);
+    const notes = typeof input.notes === "string" ? input.notes : "";
+    const overview = typeof input.overview === "string" ? input.overview : undefined;
+    if (notes.length > STORYLINE_NOTES_LIMIT) throw new Error("Author guidance is too long (maximum " + String(STORYLINE_NOTES_LIMIT) + " characters).");
+    if (overview !== undefined && overview.length > STORYLINE_OVERVIEW_LIMIT) {
+      throw new Error("The narrative overview is too long (maximum " + String(STORYLINE_OVERVIEW_LIMIT) + " characters).");
+    }
+    const previous = await this.storyline(characterId) ?? emptyStoryline(characterId);
+    const previousRoute = resolveRoute(previous, context.greetings);
+    const next: CharacterStoryline = {
+      ...previous,
+      route: routeEntries(indices, context.greetings, characterId),
+      notes,
+      updatedAt: Date.now(),
+    };
+    if (overview !== undefined) {
+      next.overview = overview;
+      if (!overview.trim()) {
+        next.overviewSignature = "";
+        next.generatedAt = null;
+      }
+    }
+    await this.writeStoryline(next);
+    this.note("storyline saved for " + characterId);
+    if (!sameRoute(previousRoute, indices)) await this.replanChat(chatId, characterId);
+  }
+
+  /** Deletes the character's storyline: route, guidance, and overview. */
+  async deleteStoryline(chatId: string, characterId: string): Promise<void> {
+    this.assertPermissions(CONTEXT_PERMISSIONS, "Deleting a storyline");
+    const context = await this.serial(chatId, () => this.context(chatId));
+    this.storylineCharacter(context, characterId);
+    await this.api.userStorage.delete(storylinePath(characterId), this.userId).catch(async () => {
+      // Hosts without delete support still end up with an empty storyline.
+      await this.api.userStorage.setJson(storylinePath(characterId), null, { userId: this.userId });
+    });
+    this.storylineCache.set(characterId, null);
+    this.note("storyline deleted for " + characterId);
+    await this.replanChat(chatId, characterId);
+  }
+
+  isGeneratingStoryline(characterId: string): boolean {
+    return this.generations.has(characterId);
+  }
+
+  cancelStorylineGeneration(characterId: string): boolean {
+    const controller = this.generations.get(characterId);
+    if (!controller) return false;
+    controller.abort();
+    return true;
+  }
+
+  /**
+   * Asks the model for a narrative overview of the route, then saves the
+   * route, guidance, and overview together so an expensive result is never lost.
+   */
+  async generateStoryline(chatId: string, characterId: string, input: StorylineDraftInput): Promise<void> {
+    this.assertPermissions(STORYLINE_GENERATION_PERMISSIONS, "Generating a narrative overview");
+    if (this.generations.has(characterId)) throw new Error("A narrative overview is already being generated for this character.");
+    const settings = await this.settings();
+    const context = await this.serial(chatId, () => this.context(chatId));
+    const character = this.storylineCharacter(context, characterId);
+    const indices = this.normalizeRoute(context, characterId, input.route);
+    const notes = typeof input.notes === "string" ? input.notes.slice(0, STORYLINE_NOTES_LIMIT) : "";
+    const route = indices.length ? indices : cardOrder(context.greetings, characterId);
+    const greetings = route.flatMap((greetingIndex) => {
+      const greeting = greetingForSelection(context.greetings, { characterId, greetingIndex });
+      return greeting ? [greeting] : [];
+    });
+    if (!greetings.length) throw new Error("This character has no greetings to build a storyline from.");
+    const prompt = renderGeneratorPrompt(settings, { character, route: greetings, notes });
+
+    const controller = new AbortController();
+    this.generations.set(characterId, controller);
+    this.note("narrative overview generation started for " + characterId);
+    let overview: string;
+    try {
+      const result = await this.api.generate.quiet({
+        type: "quiet",
+        messages: [{ role: "user", content: prompt }],
+        ...(settings.storylineConnectionId ? { connection_id: settings.storylineConnectionId } : {}),
+        ...(this.userId ? { userId: this.userId } : {}),
+        signal: controller.signal,
+      });
+      overview = generatedText(result);
+    } catch (error) {
+      if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+        this.note("narrative overview generation cancelled for " + characterId);
+        throw new Error("Narrative overview generation was cancelled.");
+      }
+      this.warn("narrative overview generation failed: " + (error instanceof Error ? error.message : String(error)));
+      throw error;
+    } finally {
+      this.generations.delete(characterId);
+    }
+    if (!overview) throw new Error("The model returned an empty narrative overview. Try again or adjust the generator instructions.");
+
+    const previous = await this.storyline(characterId) ?? emptyStoryline(characterId);
+    const previousRoute = resolveRoute(previous, context.greetings);
+    const now = Date.now();
+    await this.writeStoryline({
+      ...previous,
+      route: routeEntries(indices, context.greetings, characterId),
+      notes,
+      overview,
+      overviewSignature: routeSignature(route, context.greetings, characterId),
+      generatedAt: now,
+      updatedAt: now,
+    });
+    this.note("narrative overview generated for " + characterId + " (" + String(overview.length) + " characters)");
+    if (!sameRoute(previousRoute, indices)) await this.replanChat(chatId, characterId);
+  }
+
+  async listConnections(): Promise<ConnectionChoice[]> {
+    if (!this.api.permissions.has("generation")) return [];
+    const connections = await this.api.connections.list(this.userId);
+    return connections.map((connection) => ({
+      id: connection.id,
+      name: connection.name || connection.id,
+      model: connection.model || "",
+      isDefault: Boolean(connection.is_default),
+    }));
+  }
+
+  /**
+   * The overview of the character whose greeting is in play: the current
+   * greeting's character, else the upcoming one's, else the chat's main character.
+   */
+  private storylinePrompt(
+    context: GreetingContext,
+    state: WaypointChatState,
+    settings: WaypointSettings,
+  ): StorylinePromptStatus {
+    const active = greetingForSelection(context.greetings, state.active);
+    const upcoming = greetingForSelection(context.greetings, state.upcoming);
+    const characterId = active?.characterId ?? upcoming?.characterId ?? (context.characterIds.includes(context.primaryCharacterId) ? context.primaryCharacterId : context.characterIds[0] ?? null);
+    if (!characterId) return { ready: false, content: "", characterId: null, position: null, reason: "No character is loaded." };
+    const storyline = context.storylines?.[characterId];
+    const route = effectiveRoute(storyline, context.greetings, characterId);
+    const position = storylinePosition(
+      route,
+      active?.characterId === characterId ? active.greetingIndex : null,
+      upcoming?.characterId === characterId ? upcoming.greetingIndex : null,
+    );
+    const blocked = (reason: string): StorylinePromptStatus => ({ ready: false, content: "", characterId, position, reason });
+    if (!storyline?.overview.trim()) return blocked("No narrative overview has been saved for this character.");
+    if (context.greetings.length < 2) return blocked("This chat has no alternate greetings, so Waypoints stays off.");
+    if (!state.chatEnabled) return blocked("Waypoints is off for this chat.");
+    if (!state.storyOverview) return blocked("The narrative overview is off for this chat.");
+    if (!this.isCharacterEnabled(context, state, characterId)) return blocked("This character's Waypoints switch is off.");
+    const name = context.characters.find((entry) => entry.id === characterId)?.name || "the character";
+    return { ready: true, content: renderStorylinePrompt(settings, storyline.overview, position, name), characterId, position };
+  }
+
+  private storylineView(context: GreetingContext, state: WaypointChatState, settings: WaypointSettings): StorylineView {
+    const characters: StorylineCharacterView[] = context.characterIds.flatMap((characterId) => {
+      if (!context.characters.some((entry) => entry.id === characterId)) return [];
+      const storyline = context.storylines?.[characterId];
+      return [{
+        characterId,
+        route: resolveRoute(storyline, context.greetings),
+        effectiveRoute: effectiveRoute(storyline, context.greetings, characterId),
+        notes: storyline?.notes ?? "",
+        overview: storyline?.overview ?? "",
+        generatedAt: storyline?.generatedAt ?? null,
+        stale: isOverviewStale(storyline, context.greetings),
+        updatedAt: storyline ? storyline.updatedAt : null,
+        generating: this.generations.has(characterId),
+      }];
+    });
+    return {
+      routeEnabled: state.storyRoute,
+      overviewEnabled: state.storyOverview,
+      characters,
+      prompt: this.storylinePrompt(context, state, settings),
+    };
+  }
+
   async intercept(messages: LlmMessageDTO[], chatId: string): Promise<LlmMessageDTO[] | InterceptorResultDTO> {
     try {
       const settings = await this.settings();
       if (!settings.autoPrompt) return messages;
       if (this.missingPermissions(CONTEXT_PERMISSIONS).length) return messages;
-      return this.serial(chatId, async () => {
+      // Awaited so a failed read falls back to the untouched prompt below
+      // instead of rejecting the whole generation.
+      return await this.serial(chatId, async () => {
         const context = await this.context(chatId);
         const state = reconcileChatState(await this.state(chatId), context);
         await this.reconcileJournalLocked(chatId, state, context, settings);
-        const prompt = this.promptStatus(context, state, settings);
-        if (!prompt.ready || !prompt.content) return messages;
-        const injected: LlmMessageDTO = { role: settings.promptRole, content: prompt.content };
-        const result = insertAtDepth(messages, injected, settings.insertionDepth);
-        const index = result.indexOf(injected);
+        const scene = this.promptStatus(context, state, settings);
+        const story = this.storylinePrompt(context, state, settings);
+        const entries: Array<{ value: LlmMessageDTO; depth: number; name: string }> = [];
+        // The overview comes first when both share a depth: journey, then next scene.
+        if (story.ready && story.content) {
+          entries.push({ value: { role: settings.promptRole, content: story.content }, depth: settings.storylineInsertionDepth, name: "Waypoints: storyline overview" });
+        }
+        if (scene.ready && scene.content) {
+          entries.push({ value: { role: settings.promptRole, content: scene.content }, depth: settings.insertionDepth, name: "Waypoints: upcoming scene" });
+        }
+        if (!entries.length) return messages;
+        const result = insertAtDepths(messages, entries);
         return {
           messages: result,
-          breakdown: [{ messageIndex: index, name: "Waypoints: upcoming scene" }],
+          breakdown: entries.map((entry) => ({ messageIndex: result.indexOf(entry.value), name: entry.name })),
         };
       });
     } catch (error) {
@@ -745,25 +1076,16 @@ export class WaypointEngine {
    * chat state simply because a preset was previewed.
    */
   async loomValues(chatId?: string): Promise<WaypointLoomValues> {
-    if (!chatId || this.missingPermissions(CONTEXT_PERMISSIONS).length) {
-      return {
-        active: false,
-        content: "",
-        altMessages: [],
-        nextMessages: [],
-        currentMessage: "",
-        nextMessage: "",
-      };
-    }
+    if (!chatId || this.missingPermissions(CONTEXT_PERMISSIONS).length) return emptyLoomValues();
     try {
-      return this.serial(chatId, async () => {
+      return await this.serial(chatId, async () => {
         const settings = await this.settings();
         const context = await this.context(chatId);
         const state = reconcileChatState(await this.state(chatId), context);
         const active = greetingForSelection(context.greetings, state.active);
         const upcoming = greetingForSelection(context.greetings, state.upcoming);
         const altMessages = this.alternateMessages(context);
-        const nextMessages = nextGreetingChoices(context.greetings, active, context.isGroupChat)
+        const nextMessages = nextGreetingChoices(context.greetings, active, context.isGroupChat, chatRoutes(context, state))
           .map((greeting) => greeting.text);
         const prompt = this.promptStatus(context, state, settings);
         const ready = Boolean(
@@ -772,6 +1094,7 @@ export class WaypointEngine {
           && prompt.ready
           && prompt.content,
         );
+        const story = this.storylinePrompt(context, state, settings);
         return {
           active: ready,
           content: ready ? prompt.content : "",
@@ -779,17 +1102,12 @@ export class WaypointEngine {
           nextMessages,
           currentMessage: active?.text ?? "",
           nextMessage: upcoming?.text ?? "",
+          storylineActive: story.ready,
+          storyline: story.ready ? story.content : "",
         };
       });
     } catch {
-      return {
-        active: false,
-        content: "",
-        altMessages: [],
-        nextMessages: [],
-        currentMessage: "",
-        nextMessage: "",
-      };
+      return emptyLoomValues();
     }
   }
 
@@ -805,60 +1123,50 @@ export class WaypointEngine {
     }
   }
 
+  private emptyView(
+    settings: WaypointSettings,
+    grantedPermissions: string[],
+    missingPermissions: string[],
+    status: string,
+    reason: string,
+  ): WaypointsView {
+    return {
+      chatId: null,
+      chatEnabled: true,
+      isGroupChat: false,
+      grantedPermissions,
+      characters: [],
+      greetings: [],
+      active: null,
+      upcoming: null,
+      canUndo: false,
+      missingPermissions,
+      status,
+      settings,
+      prompt: {
+        ready: false,
+        autoPrompt: settings.autoPrompt,
+        role: settings.promptRole,
+        insertionDepth: settings.insertionDepth,
+        content: "",
+        reason,
+      },
+      routes: {},
+      storyline: emptyStorylineView(reason),
+      diagnostics: this.diagnostics(),
+    };
+  }
+
   async view(chatId?: string | null): Promise<WaypointsView> {
     const settings = await this.settings();
     const grantedPermissions = await this.api.permissions.getGranted().catch(() => []);
     const missingPermissions = this.missingPermissions(["characters", "chats", "chat_mutation", "generation", "interceptor"]);
     if (this.missingPermissions(CONTEXT_PERMISSIONS).length) {
-      return {
-        chatId: null,
-        chatEnabled: true,
-        isGroupChat: false,
-        grantedPermissions,
-        characters: [],
-        greetings: [],
-        active: null,
-        upcoming: null,
-        canUndo: false,
-        missingPermissions,
-        status: "Grant characters and chats to load Waypoints.",
-        settings,
-        prompt: {
-          ready: false,
-          autoPrompt: settings.autoPrompt,
-          role: settings.promptRole,
-          insertionDepth: settings.insertionDepth,
-          content: "",
-          reason: "Chat context permission is missing.",
-        },
-        diagnostics: this.diagnostics(),
-      };
+      return this.emptyView(settings, grantedPermissions, missingPermissions, "Grant characters and chats to load Waypoints.", "Chat context permission is missing.");
     }
     const resolvedChatId = chatId === undefined ? await this.getActiveChatId(settings) : chatId;
     if (!resolvedChatId) {
-      return {
-        chatId: null,
-        chatEnabled: true,
-        isGroupChat: false,
-        grantedPermissions,
-        characters: [],
-        greetings: [],
-        active: null,
-        upcoming: null,
-        canUndo: false,
-        missingPermissions,
-        status: "Open a character or group chat to use Waypoints.",
-        settings,
-        prompt: {
-          ready: false,
-          autoPrompt: settings.autoPrompt,
-          role: settings.promptRole,
-          insertionDepth: settings.insertionDepth,
-          content: "",
-          reason: "No active chat.",
-        },
-        diagnostics: this.diagnostics(),
-      };
+      return this.emptyView(settings, grantedPermissions, missingPermissions, "Open a character or group chat to use Waypoints.", "No active chat.");
     }
     return this.serial(resolvedChatId, async () => {
       const context = await this.context(resolvedChatId);
@@ -901,6 +1209,8 @@ export class WaypointEngine {
         status,
         settings,
         prompt,
+        routes: chatRoutes(context, state),
+        storyline: this.storylineView(context, state, settings),
         diagnostics: this.diagnostics(),
       };
     });

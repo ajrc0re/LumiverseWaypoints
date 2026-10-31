@@ -1,4 +1,5 @@
-import { hashText, type HandoffSignal } from "./engine";
+import type { HandoffSignal } from "./engine";
+import { hashText } from "./util";
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};

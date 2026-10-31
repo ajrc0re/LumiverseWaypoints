@@ -1,3 +1,8 @@
+// src/util.ts
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 // src/config.ts
 var TAG_NAME = /^[A-Za-z][A-Za-z0-9._:-]{0,63}$/;
 var OVERRIDE_NAME = /^[A-Za-z0-9_]{1,64}$/;
@@ -16,6 +21,43 @@ var DEFAULT_PROMPT_TEMPLATE = [
   "UPCOMING PREWRITTEN SCENE — DIRECTION AND TIMING REFERENCE ONLY:",
   "{{scene_excerpt}}",
   "</shape_scene_direction>"
+].join(`
+`);
+var DEFAULT_STORYLINE_TEMPLATE = [
+  "<storyline_overview>",
+  "This roleplay follows a planned narrative journey for {{character_name}} through a sequence of prewritten waypoint scenes. Use this overview to keep long-term continuity, foreshadowing, character development, and pacing consistent with where the story is headed.",
+  "- Treat it as private background guidance. Never reveal, quote, or summarize it to the user.",
+  "- Do not skip ahead: events planned for later waypoints must not happen early. Let the story earn each step.",
+  "",
+  "{{storyline_overview}}",
+  "",
+  "{{storyline_position}}",
+  "</storyline_overview>"
+].join(`
+`);
+var DEFAULT_STORYLINE_GENERATOR_TEMPLATE = [
+  "You are a narrative designer preparing private guidance for a storyteller AI that runs a long-form interactive roleplay with {{character_name}}.",
+  "",
+  "The roleplay will pass through the {{waypoint_count}} prewritten scenes below, in this order. Each scene is a waypoint that will be inserted verbatim when the story reaches it. Between waypoints, the storyteller improvises with the user and must steer the story so each next waypoint can begin naturally.",
+  "",
+  "Write a narrative overview of the entire journey that gives the storyteller the long-range context a single upcoming scene cannot:",
+  "1. Premise and arc: the central situation, the relationships, the themes and tone, and how the story escalates or transforms from the first waypoint to the last.",
+  "2. Waypoint by waypoint, as a numbered list: where and when it takes place, who is present, the emotional state, and what has to happen between the previous waypoint and this one for it to begin naturally (the bridge).",
+  "3. Continuity: facts that must stay consistent across waypoints, such as names, relationships, injuries, possessions, locations, time of day, and season.",
+  "4. Threads to foreshadow early and pay off later.",
+  "",
+  "Rules: summarize in your own words and never quote or reproduce the scenes' prose. Write in present tense as instructions to the storyteller. Use short headings and plain text without markdown tables. Keep it under about 800 words. Output only the overview.",
+  "",
+  "Character: {{character_name}}",
+  "Description: {{character_description}}",
+  "Personality: {{character_personality}}",
+  "Scenario: {{character_scenario}}",
+  "",
+  "Author guidance: {{author_notes}}",
+  "",
+  "Waypoints in story order:",
+  "",
+  "{{waypoints}}"
 ].join(`
 `);
 var DEFAULT_SETTINGS = {
@@ -41,7 +83,12 @@ var DEFAULT_SETTINGS = {
   reminderToast: true,
   reminderTimeoutAction: "yes",
   actionBarButton: true,
-  extrasActions: true
+  extrasActions: true,
+  storylineTemplate: DEFAULT_STORYLINE_TEMPLATE,
+  storylineGeneratorTemplate: DEFAULT_STORYLINE_GENERATOR_TEMPLATE,
+  storylineInsertionDepth: 0,
+  storylineWaypointCharLimit: 4000,
+  storylineConnectionId: ""
 };
 
 class SettingsValidationError extends Error {
@@ -51,9 +98,6 @@ class SettingsValidationError extends Error {
     this.name = "SettingsValidationError";
     this.issues = issues;
   }
-}
-function isRecord(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 function readString(input, field, fallback, maxLength, issues) {
   const value = input[field];
@@ -234,7 +278,12 @@ function validateSettings(input) {
     reminderToast: readBoolean(source, "reminderToast", DEFAULT_SETTINGS.reminderToast, issues),
     reminderTimeoutAction: readReminderTimeoutAction(source, issues),
     actionBarButton: readBoolean(source, "actionBarButton", DEFAULT_SETTINGS.actionBarButton, issues),
-    extrasActions: readBoolean(source, "extrasActions", DEFAULT_SETTINGS.extrasActions, issues)
+    extrasActions: readBoolean(source, "extrasActions", DEFAULT_SETTINGS.extrasActions, issues),
+    storylineTemplate: readString(source, "storylineTemplate", DEFAULT_SETTINGS.storylineTemplate, 16000, issues),
+    storylineGeneratorTemplate: readString(source, "storylineGeneratorTemplate", DEFAULT_SETTINGS.storylineGeneratorTemplate, 16000, issues),
+    storylineInsertionDepth: readInteger(source, "storylineInsertionDepth", DEFAULT_SETTINGS.storylineInsertionDepth, 0, 9999, issues),
+    storylineWaypointCharLimit: readInteger(source, "storylineWaypointCharLimit", DEFAULT_SETTINGS.storylineWaypointCharLimit, 100, 1e5, issues),
+    storylineConnectionId: readString(source, "storylineConnectionId", DEFAULT_SETTINGS.storylineConnectionId, 256, issues)
   };
   if (!settings.promptTemplate.includes("{{scene_excerpt}}")) {
     issues.push({ field: "template", message: "Prompt template must include {{scene_excerpt}}." });
@@ -244,6 +293,12 @@ function validateSettings(input) {
   }
   if (!settings.promptTemplate.includes("{{override_tag}}")) {
     warnings.push("The template omits {{override_tag}}; user override tags will not be explained to the model.");
+  }
+  if (!settings.storylineTemplate.includes("{{storyline_overview}}")) {
+    issues.push({ field: "storylineTemplate", message: "Storyline template must include {{storyline_overview}}." });
+  }
+  if (!settings.storylineGeneratorTemplate.includes("{{waypoints}}")) {
+    issues.push({ field: "storylineGeneratorTemplate", message: "Overview generator instructions must include {{waypoints}}." });
   }
   if (!validateTagName(settings.handoffTagName)) {
     issues.push({
@@ -270,12 +325,65 @@ function validateSettings(input) {
   return { settings, warnings };
 }
 
+// src/prompt.ts
+function handoffTag(settings) {
+  return "<" + settings.handoffTagName + " />";
+}
+function overrideTag(settings) {
+  return "--" + settings.overrideTagName + "--";
+}
+
+// src/storyline.ts
+function characterGreetings(greetings, characterId) {
+  return greetings.filter((greeting) => greeting.characterId === characterId);
+}
+function cardOrder(greetings, characterId) {
+  return characterGreetings(greetings, characterId).map((greeting) => greeting.greetingIndex);
+}
+function sameRoute(left, right) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+function describePosition(position) {
+  if (!position || position.total === 0)
+    return "";
+  const { waypoint, next, total } = position;
+  const of = (value) => String(value) + " of " + String(total);
+  if (waypoint !== null && next !== null) {
+    return "Journey position: the story is at waypoint " + of(waypoint) + "; the next waypoint is " + of(next) + ".";
+  }
+  if (waypoint !== null && waypoint === total) {
+    return "Journey position: the story has reached the final waypoint (" + of(waypoint) + "). Continue freely while keeping continuity with the overview.";
+  }
+  if (waypoint !== null)
+    return "Journey position: the story is at waypoint " + of(waypoint) + ".";
+  if (next !== null) {
+    return "Journey position: the current scene is outside the planned route; the next planned waypoint is " + of(next) + ".";
+  }
+  return "Journey position: the current scene is outside the planned route of " + String(total) + " waypoints.";
+}
+
 // src/state.ts
-function nextGreetingChoices(greetings, active, isGroupChat) {
+function greetingForSelection(greetings, selection) {
+  if (!selection)
+    return null;
+  return greetings.find((greeting) => greeting.characterId === selection.characterId && greeting.greetingIndex === selection.greetingIndex) ?? null;
+}
+function routeCandidates(route, selection) {
+  const position = route.indexOf(selection.greetingIndex);
+  return (position >= 0 ? route.slice(position + 1) : [...route]).filter((index) => index !== selection.greetingIndex);
+}
+function nextGreetingChoices(greetings, active, isGroupChat, routes) {
   if (!active)
     return [...greetings];
   if (isGroupChat) {
     return greetings.filter((greeting) => greeting.characterId !== active.characterId || greeting.greetingIndex !== active.greetingIndex);
+  }
+  const route = routes?.[active.characterId];
+  if (route?.length) {
+    return routeCandidates(route, active).flatMap((greetingIndex) => {
+      const greeting = greetingForSelection(greetings, { characterId: active.characterId, greetingIndex });
+      return greeting ? [greeting] : [];
+    });
   }
   return greetings.filter((greeting) => greeting.characterId === active.characterId && greeting.greetingIndex > active.greetingIndex);
 }
@@ -305,18 +413,68 @@ function canShowHud(floatingControls, grantedPermissions) {
 function greetingPickerOptions(kind, view) {
   if (kind === "current")
     return view.greetings;
-  return nextGreetingChoices(view.greetings, view.active, view.isGroupChat);
+  return nextGreetingChoices(view.greetings, view.active, view.isGroupChat, view.routes);
 }
 function shouldRefreshDrawer(eventName) {
   return eventName === "CHAT_SWITCHED" || eventName === "CHAT_CHANGED" || eventName === "waypoints:changed";
 }
-
-// src/prompt.ts
-function handoffTag(settings) {
-  return "<" + settings.handoffTagName + " />";
+function savedKey(route, notes, overview) {
+  return JSON.stringify([route, notes, overview]);
 }
-function overrideTag(settings) {
-  return "--" + settings.overrideTagName + "--";
+function storylineDraftFromSaved(saved, greetings) {
+  const own = cardOrder(greetings, saved.characterId);
+  const route = saved.route.length ? saved.route.filter((index) => own.includes(index)) : own;
+  return {
+    characterId: saved.characterId,
+    order: [...route, ...own.filter((index) => !route.includes(index))],
+    excluded: own.filter((index) => !route.includes(index)),
+    notes: saved.notes,
+    overview: saved.overview,
+    base: savedKey(saved.route, saved.notes, saved.overview)
+  };
+}
+function storylineDraftRoute(draft, greetings) {
+  const route = draft.order.filter((index) => !draft.excluded.includes(index));
+  return sameRoute(route, cardOrder(greetings, draft.characterId)) ? [] : route;
+}
+function storylineDraftStops(draft) {
+  return draft.order.filter((index) => !draft.excluded.includes(index));
+}
+function draftKey(draft, greetings) {
+  return savedKey(storylineDraftRoute(draft, greetings), draft.notes, draft.overview);
+}
+function storylineDraftDirty(draft, saved, greetings) {
+  return draftKey(draft, greetings) !== savedKey(saved.route, saved.notes, saved.overview);
+}
+function reconcileStorylineDraft(draft, saved, greetings) {
+  if (!draft || draftKey(draft, greetings) === draft.base)
+    return storylineDraftFromSaved(saved, greetings);
+  const own = cardOrder(greetings, saved.characterId);
+  const order = draft.order.filter((index) => own.includes(index));
+  const added = own.filter((index) => !order.includes(index));
+  return {
+    ...draft,
+    order: [...order, ...added],
+    excluded: [...draft.excluded.filter((index) => own.includes(index)), ...added]
+  };
+}
+function moveStorylineStop(draft, index, offset) {
+  const position = draft.order.indexOf(index);
+  const target = position + offset;
+  if (position < 0 || target < 0 || target >= draft.order.length)
+    return draft;
+  const order = [...draft.order];
+  [order[position], order[target]] = [order[target], order[position]];
+  return { ...draft, order };
+}
+function toggleStorylineStop(draft, index, included) {
+  const excluded = draft.excluded.filter((entry) => entry !== index);
+  if (!included)
+    excluded.push(index);
+  return { ...draft, excluded };
+}
+function resetStorylineOrder(draft, greetings) {
+  return { ...draft, order: cardOrder(greetings, draft.characterId), excluded: [] };
 }
 
 // src/styles.ts
@@ -348,7 +506,8 @@ var waypointStyles = [
   ".wp-picker{height:min(78vh,900px);min-height:min(560px,calc(100vh - 170px));display:flex;min-width:0;flex-direction:column;overflow:hidden;color:var(--lumiverse-text,#ececf1);font:13px/1.45 system-ui,sans-serif}.wp-picker *{box-sizing:border-box}.wp-picker-main{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:12px;padding:16px;overflow:hidden}.wp-picker-meta{color:var(--lumiverse-text-muted,#9da0a8);font-size:12px;line-height:1.35;overflow-wrap:anywhere}.wp-picker-field{display:grid;gap:6px;flex:0 0 auto}.wp-picker-label{color:var(--lumiverse-text-muted,#9da0a8);font-size:12px}.wp-picker-select{width:100%;min-height:54px;color:var(--lumiverse-text,#ececf1);background:var(--lumiverse-fill,rgba(255,255,255,.08));border:1px solid var(--lumiverse-border,#34363c);border-radius:7px;padding:13px 14px;font:600 16px/1.35 system-ui,sans-serif}.wp-picker-preview{flex:1 1 auto;min-height:0;overflow:auto;background:rgba(0,0,0,.22);border:1px solid var(--lumiverse-border,#34363c);border-radius:8px}.wp-picker-preview pre{margin:0;padding:14px;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;font:13px/1.45 ui-monospace,Consolas,monospace}.wp-picker-error{flex:0 0 auto;color:#ef8b8b;border-left:3px solid #e66161;background:color-mix(in srgb,#e66161 11%,transparent);padding:8px 10px;border-radius:4px}.wp-picker-footer{flex:0 0 auto;display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 16px 16px;border-top:1px solid var(--lumiverse-border,#34363c)}",
   ".wp-hud{display:flex;align-items:center;gap:5px;height:100%;box-sizing:border-box;background:var(--lumiverse-bg-elevated,#202126);border:1px solid var(--lumiverse-border,#34363c);border-radius:8px;padding:5px 7px;box-shadow:0 4px 16px #0006}.wp-hud-label{font-weight:700;font-size:12px;margin-right:2px}.wp-hud .wp-button{font-size:11px;padding:4px 6px}",
   ".wp-reminder{width:100%;height:100%;color:var(--lumiverse-text,#ececf1);font:13px/1.35 system-ui,sans-serif}.wp-reminder-card{box-sizing:border-box;width:100%;height:100%;overflow:hidden;border:1px solid color-mix(in srgb,var(--lumiverse-primary,#8b7cff) 80%,white);border-left:4px solid var(--lumiverse-primary,#8b7cff);border-radius:9px;background:var(--lumiverse-bg-elevated,#202126);box-shadow:0 8px 28px #0009;padding:9px 10px 0}.wp-reminder-title{font-weight:750;color:var(--lumiverse-primary,#ad9dff);font-size:12px}.wp-reminder-copy{font-size:12px;margin-top:2px}.wp-reminder-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-top:5px}.wp-reminder-count{margin-right:auto;font:700 11px/1 ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums}.wp-reminder .wp-button{font-size:11px;line-height:1;padding:5px 10px}.wp-reminder-track{height:4px;margin:7px -10px 0;background:color-mix(in srgb,var(--lumiverse-primary,#8b7cff) 20%,transparent);overflow:hidden}.wp-reminder-progress{width:100%;height:100%;background:var(--lumiverse-primary,#8b7cff);transform-origin:left center;will-change:transform}",
-  "@media (max-height:760px){.wp-picker{height:calc(100vh - 170px);min-height:0}}@media (max-width:430px){.wp-root{padding:8px}.wp-header{display:block}.wp-header .wp-button{margin-top:8px}.wp-grid{grid-template-columns:1fr}}"
+  ".wp-story-list{list-style:none;margin:0 0 4px;padding:0;display:grid;gap:6px}.wp-story-row{display:grid;grid-template-columns:auto 26px minmax(0,1fr) auto;align-items:start;gap:8px;padding:8px;border:1px solid var(--lumiverse-border,#34363c);border-radius:7px;background:var(--lumiverse-bg,#16171b)}.wp-story-row.excluded{opacity:.55;border-style:dashed}.wp-story-check{margin:3px 0 0;width:16px;height:16px;accent-color:var(--lumiverse-primary,#8b7cff)}.wp-story-step{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:color-mix(in srgb,var(--lumiverse-primary,#8b7cff) 22%,transparent);font:700 12px/1 ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums}.wp-story-row.excluded .wp-story-step{background:transparent;border:1px solid var(--lumiverse-border,#34363c)}.wp-story-body{min-width:0}.wp-story-title{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.wp-story-snippet{color:var(--lumiverse-text-muted,#9da0a8);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wp-story-preview summary{cursor:pointer;font-size:12px;color:var(--lumiverse-text-muted,#9da0a8);margin-top:2px}.wp-story-preview .wp-preview{max-height:240px}.wp-story-moves{display:flex;gap:4px}.wp-icon-button{width:28px;height:28px;padding:0;line-height:1}.wp-badge{font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:1px 6px;border-radius:999px;border:1px solid var(--lumiverse-primary,#8b7cff);color:var(--lumiverse-primary,#ad9dff)}.wp-badge.next{border-color:#77c68e;color:#77c68e}.wp-generating{align-self:center;color:var(--lumiverse-primary,#ad9dff);font-weight:600}",
+  "@media (max-height:760px){.wp-picker{height:calc(100vh - 170px);min-height:0}}@media (max-width:430px){.wp-root{padding:8px}.wp-header{display:block}.wp-header .wp-button{margin-top:8px}.wp-grid{grid-template-columns:1fr}.wp-story-row{grid-template-columns:auto 24px minmax(0,1fr)}.wp-story-moves{grid-column:3}}"
 ].join(`
 `);
 
@@ -361,14 +520,11 @@ function element(tag, className = "", text) {
     node.textContent = text;
   return node;
 }
-function isRecord2(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 function safeRecord(value) {
-  return isRecord2(value) ? value : {};
+  return isRecord(value) ? value : {};
 }
 function asView(value) {
-  if (!isRecord2(value) || !isRecord2(value.settings) || !Array.isArray(value.greetings))
+  if (!isRecord(value) || !isRecord(value.settings) || !Array.isArray(value.greetings))
     return null;
   return value;
 }
@@ -380,7 +536,7 @@ function parseSelection(value) {
     return null;
   try {
     const parsed = JSON.parse(value);
-    if (!isRecord2(parsed) || typeof parsed.characterId !== "string" || !Number.isInteger(parsed.greetingIndex))
+    if (!isRecord(parsed) || typeof parsed.characterId !== "string" || !Number.isInteger(parsed.greetingIndex))
       return null;
     return { characterId: parsed.characterId, greetingIndex: Number(parsed.greetingIndex) };
   } catch {
@@ -391,6 +547,17 @@ function greetingLabel(greeting) {
   const firstLine = greeting.text.replace(/\s+/g, " ").slice(0, 86);
   return greeting.characterName + " — greeting " + String(greeting.greetingIndex + 1) + (firstLine ? ": " + firstLine : "");
 }
+function asConnections(value) {
+  if (!Array.isArray(value))
+    return [];
+  return value.flatMap((entry) => isRecord(entry) && typeof entry.id === "string" ? [{
+    id: entry.id,
+    name: typeof entry.name === "string" ? entry.name : entry.id,
+    model: typeof entry.model === "string" ? entry.model : "",
+    isDefault: entry.isDefault === true
+  }] : []);
+}
+var GENERATION_TIMEOUT_MS = 10 * 60000;
 function compactPreview(value, limit = 580) {
   return value.length > limit ? value.slice(0, limit) + "…" : value;
 }
@@ -445,9 +612,12 @@ function setup(ctx) {
   let extrasActions = [];
   let pickerModal;
   let pickerOpen = false;
-  let promptCountContent = "";
-  let promptCountDisplay = null;
-  let promptCountSequence = 0;
+  const storyDrafts = new Map;
+  const openStoryPreviews = new Set;
+  let storyCharacterId = null;
+  let generatingCharacterId = null;
+  let connections;
+  let connectionsLoading = false;
   const pending = new Map;
   let componentHandles = [];
   const disposers = [];
@@ -456,7 +626,7 @@ function setup(ctx) {
       handle.destroy();
     componentHandles = [];
   }
-  function rpc(action, input = {}) {
+  function rpc(action, input = {}, timeoutMs = 30000) {
     if (destroyed)
       return Promise.reject(new Error("Waypoints is closed."));
     const requestId = "wp-" + String(++sequence) + "-" + Date.now().toString(36);
@@ -464,7 +634,7 @@ function setup(ctx) {
       const timer = setTimeout(() => {
         pending.delete(requestId);
         reject(new Error("Waypoints did not respond in time."));
-      }, 30000);
+      }, timeoutMs);
       pending.set(requestId, { resolve: (value) => resolve(value), reject, timer });
       try {
         ctx.sendToBackend({ type: "waypoints:request", requestId, action, input });
@@ -505,7 +675,9 @@ function setup(ctx) {
     view = null;
     busy = false;
     setNotice("");
-    refreshPromptCount("");
+    promptCounter.refresh("");
+    storylineCounter.refresh("");
+    generatingCharacterId = null;
     pickerModal?.dismiss();
     for (const request of pending.values()) {
       clearTimeout(request.timer);
@@ -608,36 +780,48 @@ function setup(ctx) {
       render();
     });
   }
-  function refreshPromptCount(content) {
-    if (!content) {
-      promptCountContent = "";
-      promptCountDisplay = null;
-      promptCountSequence += 1;
-      return;
-    }
-    if (content === promptCountContent && promptCountDisplay !== null)
-      return;
-    const sequenceAtStart = ++promptCountSequence;
-    const characterCount = content.length;
-    promptCountContent = content;
-    promptCountDisplay = "Counting… / " + String(characterCount) + " Characters";
-    (async () => {
-      let tokenCount = approximatePromptTokenCount(characterCount);
-      let approximate = true;
-      try {
-        const result = ctx.tokens ? await ctx.tokens.countText(content) : undefined;
-        if (result && Number.isFinite(result.total_tokens)) {
-          tokenCount = result.total_tokens;
-          approximate = result.approximate || result.tokenizer_id === null;
+  function tokenCounter(pageName) {
+    let counted = "";
+    let display = null;
+    let countSequence = 0;
+    return {
+      display(content) {
+        return display ?? "Counting… / " + String(content.length) + " Characters";
+      },
+      refresh(content) {
+        if (!content) {
+          counted = "";
+          display = null;
+          countSequence += 1;
+          return;
         }
-      } catch {}
-      if (destroyed || sequenceAtStart !== promptCountSequence || promptCountContent !== content)
-        return;
-      promptCountDisplay = formatPromptCount(tokenCount, characterCount, approximate);
-      if (page === "waypoints")
-        render();
-    })();
+        if (content === counted && display !== null)
+          return;
+        const sequenceAtStart = ++countSequence;
+        const characterCount = content.length;
+        counted = content;
+        display = "Counting… / " + String(characterCount) + " Characters";
+        (async () => {
+          let tokenCount = approximatePromptTokenCount(characterCount);
+          let approximate = true;
+          try {
+            const result = ctx.tokens ? await ctx.tokens.countText(content) : undefined;
+            if (result && Number.isFinite(result.total_tokens)) {
+              tokenCount = result.total_tokens;
+              approximate = result.approximate || result.tokenizer_id === null;
+            }
+          } catch {}
+          if (destroyed || sequenceAtStart !== countSequence || counted !== content)
+            return;
+          display = formatPromptCount(tokenCount, characterCount, approximate);
+          if (page === pageName)
+            render();
+        })();
+      }
+    };
   }
+  const promptCounter = tokenCounter("waypoints");
+  const storylineCounter = tokenCounter("storyline");
   function updateDraftValidation(target) {
     const result = draftValidation(draft);
     target.className = "wp-validation " + (result.valid ? "good" : "bad");
@@ -678,7 +862,9 @@ function setup(ctx) {
           draft = cloneSettingsDraft(loaded.settings);
           draftInitialized = true;
         }
-        refreshPromptCount(loaded.prompt.content);
+        promptCounter.refresh(loaded.prompt.content);
+        storylineCounter.refresh(loaded.storyline.prompt.content);
+        syncStoryDrafts();
         render();
         syncActionControls();
         syncHud();
@@ -729,14 +915,14 @@ function setup(ctx) {
   }
   async function forceTransition() {
     const result = await rpc("force", { chatId: requireCurrentChatId() });
-    const transition = isRecord2(result) ? safeTransitionText(result.transition) : "";
+    const transition = isRecord(result) ? safeTransitionText(result.transition) : "";
     if (transition)
       setNotice(transition);
     await load();
   }
   async function undoTransition() {
     const result = await rpc("undo", { chatId: requireCurrentChatId() });
-    const transition = isRecord2(result) ? safeTransitionText(result.transition) : "";
+    const transition = isRecord(result) ? safeTransitionText(result.transition) : "";
     if (transition)
       setNotice(transition);
     await load();
@@ -780,8 +966,8 @@ function setup(ctx) {
         maxHeight: 1000,
         persistent: false
       });
-    } catch (error2) {
-      throw new Error("Could not open the greeting picker: " + (error2 instanceof Error ? error2.message : String(error2)));
+    } catch (error) {
+      throw new Error("Could not open the greeting picker: " + (error instanceof Error ? error.message : String(error)));
     }
     pickerModal = modal;
     pickerOpen = true;
@@ -915,7 +1101,14 @@ function setup(ctx) {
           { key: "choose-next", label: "Choose next greeting", disabled: greetingPickerOptions("next", view).length === 0 },
           { key: "force", label: "Force next greeting", disabled: !view.upcoming || busy },
           { key: "undo", label: "Undo last insertion", disabled: !view.canUndo || busy },
+          {
+            key: "story-overview",
+            label: view.storyline.overviewEnabled ? "Turn narrative overview off for this chat" : "Turn narrative overview on for this chat",
+            active: view.storyline.overviewEnabled,
+            disabled: !view.chatId || !view.storyline.characters.some((entry) => entry.overview.trim())
+          },
           { key: "divider", label: "", type: "divider" },
+          { key: "open-storyline", label: "Open storyline designer" },
           { key: "open", label: "Open Waypoints drawer" }
         ]
       });
@@ -938,7 +1131,14 @@ function setup(ctx) {
       safely(forceTransition);
     else if (result.selectedKey === "undo")
       safely(undoTransition);
-    else if (result.selectedKey === "open")
+    else if (result.selectedKey === "story-overview") {
+      const enabled = !view.storyline.overviewEnabled;
+      safely(() => setStoryToggle("set-story-overview", enabled));
+    } else if (result.selectedKey === "open-storyline") {
+      page = "storyline";
+      render();
+      tab.activate();
+    } else if (result.selectedKey === "open")
       tab.activate();
   }
   function syncActionControls() {
@@ -1046,6 +1246,7 @@ function setup(ctx) {
     tabs.setAttribute("role", "tablist");
     for (const descriptor of [
       ["waypoints", "Waypoints"],
+      ["storyline", "Storyline"],
       ["settings", "Settings"]
     ]) {
       const targetPage = descriptor[0];
@@ -1079,14 +1280,14 @@ function setup(ctx) {
       onChange: (value) => {
         if (!isCurrentSelection(version))
           return;
-        const selection2 = parseSelection(value);
-        if (!selection2 && !allowClear)
+        const selection = parseSelection(value);
+        if (!selection && !allowClear)
           return;
         safely(async () => {
           const chatId = currentChatId();
           if (!chatId)
             throw new Error("Open a chat first.");
-          await changed(selection2);
+          await changed(selection);
           await load();
         });
       }
@@ -1108,6 +1309,13 @@ function setup(ctx) {
     heading.append(headingText);
     heading.append(button("Refresh", refresh));
     status.append(heading, element("p", "wp-muted", view.status));
+    const storyPosition = view.storyline.prompt.position;
+    const routed = Object.keys(view.routes).length > 0;
+    if (view.chatId && storyPosition && storyPosition.total > 0 && (routed || view.storyline.prompt.ready)) {
+      const storyLine = element("p", "wp-muted");
+      storyLine.append((routed ? "Following the storyline route. " : "") + (describePosition(storyPosition) || "") + (view.storyline.prompt.ready ? " Narrative overview is on." : ""));
+      status.append(storyLine);
+    }
     if (view.chatId) {
       const chatRow = element("div", "wp-character");
       chatRow.append(element("div", "wp-character-name", "Use Waypoints in this chat"));
@@ -1130,11 +1338,11 @@ function setup(ctx) {
     selections.append(element("h3", "", "Greeting path"));
     const grid = element("div", "wp-grid");
     selections.append(grid);
-    renderPicker(grid, "Active greeting", view.active, false, async (selection2) => {
-      await rpc("set-active", { chatId: currentChatId(), selection: selection2 });
+    renderPicker(grid, "Active greeting", view.active, false, async (selection) => {
+      await rpc("set-active", { chatId: currentChatId(), selection });
     });
-    renderPicker(grid, "Upcoming greeting", view.upcoming, true, async (selection2) => {
-      await rpc("set-upcoming", { chatId: currentChatId(), selection: selection2 });
+    renderPicker(grid, "Upcoming greeting", view.upcoming, true, async (selection) => {
+      await rpc("set-upcoming", { chatId: currentChatId(), selection });
     });
     const previews = element("div", "wp-grid");
     const activePreview = element("div", "wp-field");
@@ -1184,11 +1392,11 @@ function setup(ctx) {
     const promptText = view.prompt.ready ? view.prompt.autoPrompt ? "Auto-prompt is ON." : "Auto-prompt is OFF; add {{waypoints_content}} to a Loom preset to inject it." : view.prompt.reason ?? "No prompt is available.";
     prompt.append(element("p", "wp-muted", promptText + " Role: " + view.prompt.role + ". Depth: " + String(view.prompt.insertionDepth) + "."));
     if (view.prompt.content) {
-      prompt.append(element("div", "wp-prompt-count", promptCountDisplay ?? "Counting… / " + String(view.prompt.content.length) + " Characters"));
-      const details2 = element("details", "wp-diagnostics");
-      details2.append(element("summary", "", "Show rendered prompt"));
-      details2.append(element("pre", "wp-preview", view.prompt.content));
-      prompt.append(details2);
+      prompt.append(element("div", "wp-prompt-count", promptCounter.display(view.prompt.content)));
+      const details = element("details", "wp-diagnostics");
+      details.append(element("summary", "", "Show rendered prompt"));
+      details.append(element("pre", "wp-preview", view.prompt.content));
+      prompt.append(details);
     }
     parent.append(prompt);
     const diagnostics = element("section", "wp-section");
@@ -1217,8 +1425,360 @@ function setup(ctx) {
       parent.append(element("div", "wp-alert", "Floating controls are enabled in Settings, but ui_panels permission is not granted. The drawer still works."));
     }
   }
+  function syncStoryDrafts() {
+    if (!view)
+      return;
+    for (const saved of view.storyline.characters) {
+      storyDrafts.set(saved.characterId, reconcileStorylineDraft(storyDrafts.get(saved.characterId), saved, view.greetings));
+    }
+    const ids = view.storyline.characters.map((entry) => entry.characterId);
+    if (!storyCharacterId || !ids.includes(storyCharacterId)) {
+      storyCharacterId = view.storyline.prompt.characterId && ids.includes(view.storyline.prompt.characterId) ? view.storyline.prompt.characterId : ids[0] ?? null;
+    }
+  }
+  function storySaved() {
+    return view?.storyline.characters.find((entry) => entry.characterId === storyCharacterId) ?? null;
+  }
+  function storyDraft() {
+    const saved = storySaved();
+    if (!saved || !view)
+      return null;
+    let draft = storyDrafts.get(saved.characterId);
+    if (!draft) {
+      draft = storylineDraftFromSaved(saved, view.greetings);
+      storyDrafts.set(saved.characterId, draft);
+    }
+    return draft;
+  }
+  function isStoryGenerating(saved) {
+    return Boolean(saved && (generatingCharacterId === saved.characterId || saved.generating));
+  }
+  async function saveStoryline() {
+    const saved = storySaved();
+    const draft = storyDraft();
+    if (!saved || !draft || !view)
+      throw new Error("Open a chat first.");
+    const route = storylineDraftRoute(draft, view.greetings);
+    if (!storylineDraftStops(draft).length)
+      throw new Error("Include at least one greeting in the storyline.");
+    await rpc("save-storyline", {
+      chatId: requireCurrentChatId(),
+      characterId: saved.characterId,
+      storyline: { route, notes: draft.notes, overview: draft.overview }
+    });
+    storyDrafts.delete(saved.characterId);
+    await load();
+    setNotice("Storyline saved for every chat with this character.");
+  }
+  async function deleteStoryline() {
+    const saved = storySaved();
+    if (!saved)
+      throw new Error("Open a chat first.");
+    await rpc("delete-storyline", { chatId: requireCurrentChatId(), characterId: saved.characterId });
+    storyDrafts.delete(saved.characterId);
+    await load();
+    setNotice("Storyline deleted. Waypoints follows card order again.");
+  }
+  async function setStoryToggle(action, enabled) {
+    await rpc(action, { chatId: requireCurrentChatId(), enabled });
+    await load();
+  }
+  async function generateStoryline() {
+    const saved = storySaved();
+    const draft = storyDraft();
+    if (!saved || !draft || !view || busy || isStoryGenerating(saved))
+      return;
+    if (!storylineDraftStops(draft).length) {
+      setNotice("Include at least one greeting in the storyline.", true);
+      render();
+      return;
+    }
+    const version = selectionVersion;
+    const characterId = saved.characterId;
+    generatingCharacterId = characterId;
+    setNotice("");
+    render();
+    try {
+      const chatId = requireCurrentChatId();
+      await rpc("generate-storyline", {
+        chatId,
+        characterId,
+        storyline: { route: storylineDraftRoute(draft, view.greetings), notes: draft.notes }
+      }, GENERATION_TIMEOUT_MS);
+      if (!isCurrentSelection(version))
+        return;
+      storyDrafts.delete(characterId);
+      if (generatingCharacterId === characterId)
+        generatingCharacterId = null;
+      await load();
+      setNotice("Narrative overview generated and saved.");
+    } catch (error) {
+      if (isCurrentSelection(version))
+        setNotice(error instanceof Error ? error.message : String(error), true);
+    } finally {
+      if (generatingCharacterId === characterId)
+        generatingCharacterId = null;
+      if (isCurrentSelection(version)) {
+        render();
+        syncHud();
+      }
+    }
+  }
+  function cancelStoryline(characterId) {
+    rpc("cancel-storyline", { characterId }).catch(() => {
+      return;
+    });
+  }
+  function renderStoryRoute(parent, draft, generating) {
+    if (!view)
+      return;
+    const currentView = view;
+    const stops = storylineDraftStops(draft);
+    const route = element("section", "wp-section");
+    const heading = element("div", "wp-row between");
+    heading.append(element("h3", "", "Route"));
+    heading.append(element("span", "wp-kicker", String(stops.length) + " of " + String(draft.order.length) + " greetings"));
+    route.append(heading);
+    route.append(element("p", "wp-help", "Tick the greetings this storyline visits and arrange them in story order. Unticked greetings are skipped when Waypoints picks the next greeting."));
+    const list = element("ol", "wp-story-list");
+    const greetingsByIndex = new Map(currentView.greetings.filter((greeting) => greeting.characterId === draft.characterId).map((greeting) => [greeting.greetingIndex, greeting]));
+    const update = (next) => {
+      storyDrafts.set(draft.characterId, next);
+      render();
+    };
+    draft.order.forEach((index, position) => {
+      const greeting = greetingsByIndex.get(index);
+      if (!greeting)
+        return;
+      const included = !draft.excluded.includes(index);
+      const row = element("li", "wp-story-row" + (included ? "" : " excluded"));
+      const toggle = element("input", "wp-story-check");
+      toggle.type = "checkbox";
+      toggle.checked = included;
+      toggle.disabled = busy || generating;
+      toggle.setAttribute("aria-label", "Include greeting " + String(index + 1) + " in the storyline");
+      toggle.onchange = () => update(toggleStorylineStop(draft, index, toggle.checked));
+      const step = element("span", "wp-story-step", included ? String(stops.indexOf(index) + 1) : "–");
+      const body = element("div", "wp-story-body");
+      const title = element("div", "wp-story-title");
+      title.append(element("span", "wp-character-name", "Greeting " + String(index + 1)));
+      if (currentView.active?.characterId === draft.characterId && currentView.active.greetingIndex === index) {
+        title.append(element("span", "wp-badge", "Current"));
+      }
+      if (currentView.upcoming?.characterId === draft.characterId && currentView.upcoming.greetingIndex === index) {
+        title.append(element("span", "wp-badge next", "Next"));
+      }
+      body.append(title);
+      body.append(element("div", "wp-story-snippet", greeting.text.replace(/\s+/g, " ").slice(0, 140)));
+      const previewKey = draft.characterId + ":" + String(index);
+      const details = element("details", "wp-story-preview");
+      details.open = openStoryPreviews.has(previewKey);
+      details.ontoggle = () => {
+        if (details.open)
+          openStoryPreviews.add(previewKey);
+        else
+          openStoryPreviews.delete(previewKey);
+      };
+      details.append(element("summary", "", "Preview"), element("pre", "wp-preview", compactPreview(greeting.text, 2400)));
+      body.append(details);
+      const moves = element("div", "wp-story-moves");
+      const up = element("button", "wp-button wp-icon-button", "↑");
+      up.type = "button";
+      up.title = "Move earlier";
+      up.setAttribute("aria-label", "Move greeting " + String(index + 1) + " earlier");
+      up.disabled = busy || generating || position === 0;
+      up.onclick = () => update(moveStorylineStop(draft, index, -1));
+      const down = element("button", "wp-button wp-icon-button", "↓");
+      down.type = "button";
+      down.title = "Move later";
+      down.setAttribute("aria-label", "Move greeting " + String(index + 1) + " later");
+      down.disabled = busy || generating || position === draft.order.length - 1;
+      down.onclick = () => update(moveStorylineStop(draft, index, 1));
+      moves.append(up, down);
+      row.append(toggle, step, body, moves);
+      list.append(row);
+    });
+    route.append(list);
+    const actions = element("div", "wp-actions");
+    actions.append(button("Include all", () => update({ ...draft, excluded: [] }), "", generating || !draft.excluded.length), button("Reset to card order", () => update(resetStorylineOrder(draft, currentView.greetings)), "", generating));
+    route.append(actions);
+    parent.append(route);
+  }
+  function renderStoryChat(parent, saved) {
+    if (!view)
+      return;
+    const section = element("section", "wp-section");
+    section.append(element("h3", "", "This chat"));
+    section.append(element("p", "wp-help", "The storyline is shared by every chat with this character. These switches change only the open chat."));
+    const switches = [
+      ["Follow the storyline route", "Waypoints picks the next greeting from the route instead of card order.", view.storyline.routeEnabled, "set-story-route"],
+      ["Add the narrative overview to prompts", saved.overview.trim() ? "Gives the model the whole journey, not just the next greeting." : "Generate or write an overview below first.", view.storyline.overviewEnabled, "set-story-overview"]
+    ];
+    for (const [label, help, checked, action] of switches) {
+      const row = element("div", "wp-character");
+      const names = element("div");
+      names.append(element("div", "wp-character-name", label), element("div", "wp-help", help));
+      const mount = element("div", "wp-native");
+      row.append(names, mount);
+      section.append(row);
+      const version = selectionVersion;
+      componentHandles.push(ctx.components.mountSwitch(mount, {
+        checked,
+        ariaLabel: label,
+        onChange: (value) => {
+          if (!isCurrentSelection(version))
+            return;
+          safely(() => setStoryToggle(action, value));
+        }
+      }));
+    }
+    const prompt = view.storyline.prompt;
+    if (prompt.characterId === saved.characterId) {
+      const position = describePosition(prompt.position);
+      if (position)
+        section.append(element("p", "wp-muted", position));
+    }
+    parent.append(section);
+  }
+  function renderStoryOverview(parent, saved, draft, generating) {
+    if (!view)
+      return;
+    const currentView = view;
+    const section = element("section", "wp-section");
+    section.append(element("h3", "", "Narrative overview"));
+    section.append(element("p", "wp-help", "A meta prompt that describes the whole journey, so the model can foreshadow and keep continuity instead of only seeing the next greeting. Generate it from the route, then edit it freely."));
+    const dirtyLabel = element("div", "wp-validation");
+    const saveButton = button("Save storyline", () => safely(saveStoryline), "primary", generating);
+    const discardButton = button("Discard changes", () => {
+      storyDrafts.set(saved.characterId, storylineDraftFromSaved(saved, currentView.greetings));
+      render();
+    }, "", generating);
+    const updateDirty = () => {
+      const dirty = storylineDraftDirty(draft, saved, currentView.greetings);
+      dirtyLabel.className = "wp-validation " + (dirty ? "bad" : "good");
+      dirtyLabel.textContent = dirty ? "Unsaved changes." : saved.updatedAt === null ? "Nothing saved yet for this character." : "Saved.";
+      saveButton.disabled = busy || generating || !dirty;
+      discardButton.disabled = busy || generating || !dirty;
+    };
+    addField(section, "Author guidance", "Optional notes for the generator, such as genre, themes, or how the arc should feel.", (target) => ctx.components.mountTextArea(target, {
+      value: draft.notes,
+      rows: 3,
+      disabled: generating,
+      placeholder: "Slow-burn romance; keep the mystery of the lighthouse unresolved until the end.",
+      ariaLabel: "Author guidance",
+      onChange: (value) => {
+        draft.notes = value;
+        updateDirty();
+      }
+    }));
+    const generateRow = element("div", "wp-actions");
+    if (generating) {
+      generateRow.append(element("span", "wp-generating", "Generating the narrative overview…"));
+      const cancel = element("button", "wp-button danger", "Cancel");
+      cancel.type = "button";
+      cancel.onclick = () => cancelStoryline(saved.characterId);
+      generateRow.append(cancel);
+    } else {
+      const canGenerate = currentView.grantedPermissions.includes("generation");
+      generateRow.append(button(saved.overview.trim() ? "Regenerate overview" : "Generate overview", () => generateStoryline(), "primary", !canGenerate || !storylineDraftStops(draft).length));
+      if (!canGenerate)
+        generateRow.append(element("span", "wp-help", "Needs the generation permission."));
+    }
+    section.append(generateRow);
+    const routeChanged = !sameRoute(storylineDraftRoute(draft, currentView.greetings), saved.route);
+    if (saved.overview.trim() && (saved.stale || routeChanged)) {
+      section.append(element("div", "wp-alert", routeChanged ? "The route has changed since this overview was written. Regenerate it so the journey matches." : "The route's greetings have changed on the character card since this overview was generated. Regenerate it to match."));
+    }
+    if (saved.generatedAt) {
+      section.append(element("p", "wp-help", "Last generated " + new Date(saved.generatedAt).toLocaleString() + "."));
+    }
+    addField(section, "Overview", "Saved per character. Edits here are used as-is.", (target) => ctx.components.mountTextArea(target, {
+      value: draft.overview,
+      rows: 14,
+      disabled: generating,
+      placeholder: "Generate an overview, or write your own description of the journey.",
+      ariaLabel: "Narrative overview",
+      onChange: (value) => {
+        draft.overview = value;
+        updateDirty();
+      }
+    }));
+    const prompt = currentView.storyline.prompt;
+    if (prompt.characterId === saved.characterId) {
+      section.append(element("p", "wp-muted", prompt.ready ? currentView.settings.autoPrompt ? "Auto-prompt is ON: the overview is added to every generation in this chat." : "Auto-prompt is OFF; add {{waypoints_storyline}} to a Loom preset to inject it." : prompt.reason ?? "The overview is not active."));
+      if (prompt.content) {
+        section.append(element("div", "wp-prompt-count", storylineCounter.display(prompt.content)));
+        const details = element("details", "wp-diagnostics");
+        details.append(element("summary", "", "Show rendered overview prompt"), element("pre", "wp-preview", prompt.content));
+        section.append(details);
+      }
+    } else if (saved.overview.trim()) {
+      section.append(element("p", "wp-muted", "In this group chat, the overview in prompts belongs to the character whose greeting is current."));
+    }
+    const footer = element("div", "wp-actions");
+    footer.append(saveButton, discardButton);
+    if (saved.updatedAt !== null) {
+      footer.append(button("Delete storyline", () => safely(deleteStoryline), "danger", generating));
+    }
+    section.append(dirtyLabel, footer);
+    updateDirty();
+    parent.append(section);
+  }
+  function renderStoryline(parent) {
+    if (!view) {
+      parent.append(element("div", "wp-card", "Loading Waypoints…"));
+      return;
+    }
+    const saved = storySaved();
+    const draft = storyDraft();
+    if (!view.chatId || !saved || !draft) {
+      parent.append(element("div", "wp-card", view.chatId ? "This chat has no characters with greetings." : view.status));
+      return;
+    }
+    const generating = isStoryGenerating(saved);
+    const intro = element("section", "wp-card");
+    intro.append(element("div", "wp-kicker", "Storyline designer"));
+    const name = view.characters.find((character) => character.id === saved.characterId)?.name || "Unnamed character";
+    intro.append(element("h3", "", name + "'s storyline"));
+    intro.append(element("p", "wp-muted", "Choose which greetings the story visits and in what order, then generate a narrative overview of the whole journey. Saved per character for every chat with them."));
+    if (view.isGroupChat && view.storyline.characters.length > 1) {
+      const version = selectionVersion;
+      addField(intro, "Character", "Each group member has their own storyline.", (target) => ctx.components.mountSelect(target, {
+        value: saved.characterId,
+        options: view.storyline.characters.map((entry) => ({
+          value: entry.characterId,
+          label: view.characters.find((character) => character.id === entry.characterId)?.name || "Unnamed character"
+        })),
+        onChange: (value) => {
+          if (!isCurrentSelection(version))
+            return;
+          storyCharacterId = value;
+          render();
+        }
+      }));
+    }
+    parent.append(intro);
+    renderStoryRoute(parent, draft, generating);
+    renderStoryChat(parent, saved);
+    renderStoryOverview(parent, saved, draft, generating);
+  }
+  async function loadConnections() {
+    if (connections || connectionsLoading)
+      return;
+    connectionsLoading = true;
+    const version = selectionVersion;
+    try {
+      connections = asConnections(await rpc("list-connections"));
+    } catch {
+      connections = [];
+    } finally {
+      connectionsLoading = false;
+      if (isCurrentSelection(version) && page === "settings")
+        render();
+    }
+  }
   function safeTransitionText(value) {
-    if (!isRecord2(value) || typeof value.reason !== "string")
+    if (!isRecord(value) || typeof value.reason !== "string")
       return "";
     return value.reason;
   }
@@ -1310,7 +1870,69 @@ function setup(ctx) {
 {{/if}}`));
     loomHelp.append(element("p", "wp-help", "Then simply call the variable using {{getvar::shape_scene_direction}} where ever it would be relevant in your COT prompt. The variable will clear itself out when waypoints is not active, so always leave the prompt enabled in your preset."));
     loomHelp.append(element("p", "wp-help", "Pre-run council tools can also use {{altMessage1}}, {{altMessage2}}, and so on for this character's alternate greetings. {{altMessages}} returns them as a JSON array; the standard {{firstMessage}} is separate. Higher altMessage indices are unregistered when switching to a character with fewer alternate greetings. {{nextMessages}} returns the choices offered by Waypoints' next-greeting picker (only later greetings in solo chats). {{currentMessage}} and {{nextMessage}} return the selected current and upcoming greetings."));
+    loomHelp.append(element("p", "wp-help", "The narrative overview has its own pair: {{if::{{waypoints_storyline_active}}}}{{waypoints_storyline}}{{/if}}. It is active when the open chat has the overview switched on in the Storyline tab."));
     settings.append(loomHelp);
+    settings.append(element("div", "wp-divider"));
+    settings.append(element("h4", "", "Storyline"));
+    addField(settings, "Overview prompt template", "Wraps a character's narrative overview when it is added to prompts. Required: {{storyline_overview}}. Optional: {{storyline_position}} and {{character_name}}.", (target) => ctx.components.mountTextArea(target, {
+      value: draft.storylineTemplate,
+      rows: 9,
+      ariaLabel: "Overview prompt template",
+      onChange: (value) => {
+        draft.storylineTemplate = value;
+        updateDraftValidation(validation);
+      }
+    }));
+    addField(settings, "Overview generator instructions", "Sent to the model by Generate overview. Required: {{waypoints}}. Optional: {{character_name}}, {{character_description}}, {{character_personality}}, {{character_scenario}}, {{author_notes}}, and {{waypoint_count}}.", (target) => ctx.components.mountTextArea(target, {
+      value: draft.storylineGeneratorTemplate,
+      rows: 12,
+      ariaLabel: "Overview generator instructions",
+      onChange: (value) => {
+        draft.storylineGeneratorTemplate = value;
+        updateDraftValidation(validation);
+      }
+    }));
+    const storyGrid = element("div", "wp-grid");
+    settings.append(storyGrid);
+    addField(storyGrid, "Overview insertion depth", "Uses the prompt role above. At the same depth as the scene prompt, the overview comes first.", (target) => ctx.components.mountNumericInput(target, {
+      value: draft.storylineInsertionDepth,
+      integer: true,
+      min: 0,
+      max: 9999,
+      onChange: (value) => {
+        if (value !== null)
+          draft.storylineInsertionDepth = value;
+        updateDraftValidation(validation);
+      }
+    }));
+    addField(storyGrid, "Generator limit per greeting", "Characters of each greeting sent to the generator, after exclusion filtering.", (target) => ctx.components.mountNumericInput(target, {
+      value: draft.storylineWaypointCharLimit,
+      integer: true,
+      min: 100,
+      max: 1e5,
+      onChange: (value) => {
+        if (value !== null)
+          draft.storylineWaypointCharLimit = value;
+        updateDraftValidation(validation);
+      }
+    }));
+    if (!connections)
+      loadConnections();
+    const connectionOptions = [{ value: "", label: "Default connection" }, ...(connections ?? []).map((connection) => ({
+      value: connection.id,
+      label: connection.name + (connection.model ? " — " + connection.model : "") + (connection.isDefault ? " (default)" : "")
+    }))];
+    if (draft.storylineConnectionId && !connectionOptions.some((option) => option.value === draft.storylineConnectionId)) {
+      connectionOptions.push({ value: draft.storylineConnectionId, label: connections ? "Unavailable connection" : "Loading connections…" });
+    }
+    addField(storyGrid, "Generator connection", "Use a cheaper or stronger model for overviews than for chat.", (target) => ctx.components.mountSelect(target, {
+      value: draft.storylineConnectionId,
+      options: connectionOptions,
+      onChange: (value) => {
+        draft.storylineConnectionId = value;
+        updateDraftValidation(validation);
+      }
+    }));
     settings.append(element("div", "wp-divider"));
     settings.append(element("h4", "", "Handoff"));
     const handoffGrid = element("div", "wp-grid");
@@ -1433,7 +2055,7 @@ function setup(ctx) {
     componentHandles.push(ctx.components.mountCheckbox(extrasTarget, {
       checked: draft.extrasActions,
       label: "Show Waypoints actions in the Extras menu",
-      hint: "Adds Toggle, Undo, and Force entries under Lumiverse's native Extras popover.",
+      hint: "Adds Toggle, Choose current greeting, Choose next greeting, Undo, and Force entries under Lumiverse's native Extras popover.",
       onChange: (checked) => {
         draft.extrasActions = checked;
         updateDraftValidation(validation);
@@ -1445,7 +2067,7 @@ function setup(ctx) {
       if (!validationResult.valid)
         throw new Error(validationResult.messages.join(" "));
       const result = safeRecord(await rpc("save-settings", { settings: draft }));
-      const saved = isRecord2(result.settings) ? result.settings : null;
+      const saved = isRecord(result.settings) ? result.settings : null;
       if (saved) {
         draft = cloneSettingsDraft(saved);
         draftInitialized = true;
@@ -1459,7 +2081,7 @@ function setup(ctx) {
       render();
     }), button("Reset defaults", () => safely(async () => {
       const result = safeRecord(await rpc("reset-settings"));
-      const saved = isRecord2(result.settings) ? result.settings : null;
+      const saved = isRecord(result.settings) ? result.settings : null;
       if (saved) {
         draft = cloneSettingsDraft(saved);
         draftInitialized = true;
@@ -1495,13 +2117,13 @@ function setup(ctx) {
   function renderHud() {
     if (!hud || !view)
       return;
-    const root2 = hud.root;
-    root2.replaceChildren();
-    root2.className = "wp-hud";
-    root2.append(element("span", "wp-hud-label", "Waypoints"));
-    root2.append(button(view.chatEnabled ? "ON" : "OFF", () => safely(toggleChatEnabled), "", !view.chatId));
-    root2.append(button("Undo", () => safely(undoTransition), "", !view.canUndo));
-    root2.append(button("Force", () => safely(forceTransition), "primary", !view.upcoming));
+    const root = hud.root;
+    root.replaceChildren();
+    root.className = "wp-hud";
+    root.append(element("span", "wp-hud-label", "Waypoints"));
+    root.append(button(view.chatEnabled ? "ON" : "OFF", () => safely(toggleChatEnabled), "", !view.chatId));
+    root.append(button("Undo", () => safely(undoTransition), "", !view.canUndo));
+    root.append(button("Force", () => safely(forceTransition), "primary", !view.upcoming));
   }
   function render() {
     if (destroyed)
@@ -1522,6 +2144,8 @@ function setup(ctx) {
     root.append(pageRoot);
     if (page === "waypoints")
       renderDashboard(pageRoot);
+    else if (page === "storyline")
+      renderStoryline(pageRoot);
     else
       renderSettings(pageRoot);
   }

@@ -87,3 +87,17 @@ export function insertAtDepth<T>(messages: readonly T[], value: T, depth: number
   const insertionIndex = Math.max(0, messages.length - Math.max(0, depth));
   return [...messages.slice(0, insertionIndex), value, ...messages.slice(insertionIndex)];
 }
+
+/**
+ * Inserts several values, each at its own depth measured against the
+ * original messages. Values that share a depth keep their given order.
+ */
+export function insertAtDepths<T>(messages: readonly T[], entries: ReadonlyArray<{ value: T; depth: number }>): T[] {
+  const at = (depth: number) => Math.max(0, messages.length - Math.max(0, depth));
+  const result: T[] = [];
+  for (let index = 0; index <= messages.length; index += 1) {
+    for (const entry of entries) if (at(entry.depth) === index) result.push(entry.value);
+    if (index < messages.length) result.push(messages[index]);
+  }
+  return result;
+}
