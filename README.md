@@ -65,6 +65,35 @@ The default user override marker is:
 
 The scene-shaping prompt tells the model to make a best-effort transition when that marker appears in the user's latest reply.
 
+## Storyline designer
+
+The drawer's **Storyline** tab plans a character's whole journey instead of one greeting at a time. A storyline is saved per character, so every chat with that character shares it.
+
+- **Route**: tick the greetings the story should visit and arrange them with the arrow buttons. Unticked greetings are skipped. When a chat follows the route, Waypoints picks each next greeting from the route instead of card order, and the next-greeting picker and `{{nextMessages}}` offer only the remaining stops. A route that includes every greeting in card order is stored as the default, so greetings added to the card later join it automatically. If greetings are added, removed, or reordered on the card, the route follows each greeting by its text.
+- **Narrative overview**: select **Generate overview** to have the model write a meta prompt describing the entire journey: the premise and arc, each waypoint and the bridge into it, continuity facts, and threads to foreshadow. Optional **Author guidance** steers the generator. The overview stays fully editable, and Waypoints warns when the route or its greetings have changed since it was generated. Generation can be cancelled, and the route, guidance, and overview are saved together when it finishes.
+- **This chat**: two per-chat switches. **Follow the storyline route** and **Add the narrative overview to prompts** are on by default and change only the open chat. The compass menu can also toggle the overview.
+
+When the overview is on, it is rendered with the **Overview prompt template** and ends with a story progress statement, so the same prompt stays clear 100 turns in. For example: "Story progress: the story is currently in prewritten scene 3 of 5. Prewritten scenes 1 and 2 have already happened. The next prewritten scene is 4 of 5; steer toward it gradually. Prewritten scene 5 is an upcoming story beat after that." Everything the roleplay model sees speaks of prewritten scenes and story beats, never greetings or the character card. With **Auto-prompt** on, it is inserted at its own depth (before the scene prompt when both share a depth). Loom presets can place it instead:
+
+```text
+{{if::{{waypoints_storyline_active}}}}
+{{waypoints_storyline}}
+{{/if}}
+```
+
+To write your own wrapper instead of the template, these macros expose the parts:
+
+| Macro | Returns |
+| --- | --- |
+| `{{waypoints_storyline_overview}}` | The raw overview text, only while the overview is active in this chat. |
+| `{{waypoints_storyline_position}}` | The story progress statement. |
+| `{{waypoints_current_waypoint}}` / `{{waypoints_next_waypoint}}` | The current and next prewritten scene's number along the storyline. Empty when the story is between planned scenes or nothing is next. |
+| `{{waypoints_waypoint_count}}` | Number of prewritten scenes on the storyline. |
+
+Built-in templates saved by an earlier version are upgraded to the current default automatically; edited templates are left alone.
+
+In group chats, each member has their own storyline, and prompts use the overview of the character whose greeting is current.
+
 ## Prompts
 
 ### Simple prompt macro
@@ -118,6 +147,18 @@ The exclusion regex runs before the excerpt is truncated. It accepts JavaScript-
 
 You can also configure the prompt role, insertion depth (`0` is the newest edge), and whether automatic prompt insertion is enabled.
 
+### Storyline
+
+| Setting | Meaning |
+| --- | --- |
+| Overview prompt template | Wraps the narrative overview in prompts. Requires `{{storyline_overview}}`; also supports `{{storyline_position}}` and `{{character_name}}`. |
+| Overview generator instructions | Sent to the model by **Generate overview**. Requires `{{waypoints}}`; also supports `{{character_name}}`, `{{character_description}}`, `{{character_personality}}`, `{{character_scenario}}`, `{{author_notes}}`, and `{{waypoint_count}}`. |
+| Overview insertion depth | Depth for the overview when Auto-prompt is on. It uses the same prompt role as the scene prompt. |
+| Generator limit per greeting | Characters of each greeting sent to the generator, after the exclusion regex runs. |
+| Generator connection | Connection profile used for generation, so overviews can use a different model than chat. |
+
+If a stored settings file has an invalid value, Waypoints resets only that field instead of every setting.
+
 The handoff tag name and override marker are validated before save. Advanced settings expose interceptor/content-processor priority, chat and handoff-read retries, retry delay, pending-handoff and dedupe-journal limits, and diagnostic retention.
 
 ### Interface additions
@@ -161,4 +202,4 @@ bun test
 bun run build
 ```
 
-The test suite covers configuration/prompt/tag/selection behavior, transition journaling and recovery, duplicate lifecycle notifications, Undo selection restoration, and frontend navigation, picker, and control behavior.
+The test suite covers configuration/prompt/tag/selection behavior, storyline routes, overview generation and injection, the Storyline tab, transition journaling and recovery, duplicate lifecycle notifications, Undo selection restoration, and frontend navigation, picker, and control behavior.

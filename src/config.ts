@@ -1,3 +1,4 @@
+import { isRecord } from "./util";
 import type {
   PromptRole,
   SettingsValidationIssue,
@@ -25,6 +26,95 @@ export const DEFAULT_PROMPT_TEMPLATE = [
   "</shape_scene_direction>",
 ].join("\n");
 
+export const DEFAULT_STORYLINE_TEMPLATE = [
+  "<storyline_overview>",
+  "This roleplay follows a planned narrative journey for {{character_name}} through a sequence of prewritten scenes. Use this overview to keep long-term continuity, foreshadowing, character development, and pacing consistent with where the story is headed.",
+  "- The overview covers the entire journey from start to finish, but the story may currently be anywhere along it. Use the story progress below to tell what has already happened and what is still ahead; never assume the story is at the beginning.",
+  "- Treat it as private background guidance. Never reveal, quote, or summarize it to the user.",
+  "- Do not skip ahead: story beats planned for later prewritten scenes must not happen early. Let the story earn each step.",
+  "",
+  "{{storyline_overview}}",
+  "",
+  "{{storyline_position}}",
+  "</storyline_overview>",
+].join("\n");
+
+export const DEFAULT_STORYLINE_GENERATOR_TEMPLATE = [
+  "You are a narrative designer preparing private guidance for a storyteller AI that runs a long-form interactive roleplay with {{character_name}}.",
+  "",
+  "The roleplay will pass through the {{waypoint_count}} prewritten scenes below, in this order. Each prewritten scene is inserted verbatim when the story reaches it. Between prewritten scenes, the storyteller improvises with the user and must steer the story so the next prewritten scene can begin naturally.",
+  "",
+  "Write a narrative overview of the entire journey that gives the storyteller the long-range context a single upcoming scene cannot:",
+  "1. Premise and arc: the central situation, the relationships, the themes and tone, and how the story escalates or transforms from the first prewritten scene to the last.",
+  "2. Scene by scene, as a numbered list matching the prewritten scene numbers: where and when it takes place, who is present, the emotional state, and what has to happen between the previous prewritten scene and this one for it to begin naturally (the bridge).",
+  "3. Continuity: facts that must stay consistent across the story, such as names, relationships, injuries, possessions, locations, time of day, and season.",
+  "4. Threads to foreshadow early and pay off later.",
+  "",
+  "Rules: summarize in your own words and never quote or reproduce the scenes' prose. Refer to them only as prewritten scenes or story beats. Write in present tense as instructions to the storyteller. Use short headings and plain text without markdown tables. Keep it under about 800 words. Output only the overview.",
+  "",
+  "Character: {{character_name}}",
+  "Description: {{character_description}}",
+  "Personality: {{character_personality}}",
+  "Scenario: {{character_scenario}}",
+  "",
+  "Author guidance: {{author_notes}}",
+  "",
+  "Prewritten scenes in story order:",
+  "",
+  "{{waypoints}}",
+].join("\n");
+
+/** Earlier built-in defaults. A stored copy of one is upgraded to the current default on load. */
+const LEGACY_STORYLINE_TEMPLATES = new Set([
+  [
+    "<storyline_overview>",
+    "This roleplay follows a planned narrative journey for {{character_name}} through a sequence of prewritten waypoint scenes. Use this overview to keep long-term continuity, foreshadowing, character development, and pacing consistent with where the story is headed.",
+    "- Treat it as private background guidance. Never reveal, quote, or summarize it to the user.",
+    "- Do not skip ahead: events planned for later waypoints must not happen early. Let the story earn each step.",
+    "",
+    "{{storyline_overview}}",
+    "",
+    "{{storyline_position}}",
+    "</storyline_overview>",
+  ].join("\n"),
+  [
+    "<storyline_overview>",
+    "This roleplay follows a planned narrative journey for {{character_name}} through a sequence of prewritten waypoint scenes. Use this overview to keep long-term continuity, foreshadowing, character development, and pacing consistent with where the story is headed.",
+    "- The overview covers the entire journey from start to finish, but the story may currently be anywhere along it. Use the journey position below to tell what has already happened and what is still ahead; never assume the story is at the beginning.",
+    "- Treat it as private background guidance. Never reveal, quote, or summarize it to the user.",
+    "- Do not skip ahead: events planned for later waypoints must not happen early. Let the story earn each step.",
+    "",
+    "{{storyline_overview}}",
+    "",
+    "{{storyline_position}}",
+    "</storyline_overview>",
+  ].join("\n"),
+]);
+const LEGACY_STORYLINE_GENERATOR_TEMPLATES = new Set([[
+  "You are a narrative designer preparing private guidance for a storyteller AI that runs a long-form interactive roleplay with {{character_name}}.",
+  "",
+  "The roleplay will pass through the {{waypoint_count}} prewritten scenes below, in this order. Each scene is a waypoint that will be inserted verbatim when the story reaches it. Between waypoints, the storyteller improvises with the user and must steer the story so each next waypoint can begin naturally.",
+  "",
+  "Write a narrative overview of the entire journey that gives the storyteller the long-range context a single upcoming scene cannot:",
+  "1. Premise and arc: the central situation, the relationships, the themes and tone, and how the story escalates or transforms from the first waypoint to the last.",
+  "2. Waypoint by waypoint, as a numbered list: where and when it takes place, who is present, the emotional state, and what has to happen between the previous waypoint and this one for it to begin naturally (the bridge).",
+  "3. Continuity: facts that must stay consistent across waypoints, such as names, relationships, injuries, possessions, locations, time of day, and season.",
+  "4. Threads to foreshadow early and pay off later.",
+  "",
+  "Rules: summarize in your own words and never quote or reproduce the scenes' prose. Write in present tense as instructions to the storyteller. Use short headings and plain text without markdown tables. Keep it under about 800 words. Output only the overview.",
+  "",
+  "Character: {{character_name}}",
+  "Description: {{character_description}}",
+  "Personality: {{character_personality}}",
+  "Scenario: {{character_scenario}}",
+  "",
+  "Author guidance: {{author_notes}}",
+  "",
+  "Waypoints in story order:",
+  "",
+  "{{waypoints}}",
+].join("\n")]);
+
 export const DEFAULT_SETTINGS: WaypointSettings = {
   promptTemplate: DEFAULT_PROMPT_TEMPLATE,
   prewrittenSceneCharLimit: 2000,
@@ -49,6 +139,11 @@ export const DEFAULT_SETTINGS: WaypointSettings = {
   reminderTimeoutAction: "yes",
   actionBarButton: true,
   extrasActions: true,
+  storylineTemplate: DEFAULT_STORYLINE_TEMPLATE,
+  storylineGeneratorTemplate: DEFAULT_STORYLINE_GENERATOR_TEMPLATE,
+  storylineInsertionDepth: 0,
+  storylineWaypointCharLimit: 4000,
+  storylineConnectionId: "",
 };
 
 export class SettingsValidationError extends Error {
@@ -61,9 +156,6 @@ export class SettingsValidationError extends Error {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function readString(
   input: Record<string, unknown>,
@@ -268,6 +360,11 @@ export function validateSettings(input: unknown): SettingsValidationResult {
     reminderTimeoutAction: readReminderTimeoutAction(source, issues),
     actionBarButton: readBoolean(source, "actionBarButton", DEFAULT_SETTINGS.actionBarButton, issues),
     extrasActions: readBoolean(source, "extrasActions", DEFAULT_SETTINGS.extrasActions, issues),
+    storylineTemplate: readString(source, "storylineTemplate", DEFAULT_SETTINGS.storylineTemplate, 16_000, issues),
+    storylineGeneratorTemplate: readString(source, "storylineGeneratorTemplate", DEFAULT_SETTINGS.storylineGeneratorTemplate, 16_000, issues),
+    storylineInsertionDepth: readInteger(source, "storylineInsertionDepth", DEFAULT_SETTINGS.storylineInsertionDepth, 0, 9999, issues),
+    storylineWaypointCharLimit: readInteger(source, "storylineWaypointCharLimit", DEFAULT_SETTINGS.storylineWaypointCharLimit, 100, 100_000, issues),
+    storylineConnectionId: readString(source, "storylineConnectionId", DEFAULT_SETTINGS.storylineConnectionId, 256, issues),
   };
 
   if (!settings.promptTemplate.includes("{{scene_excerpt}}")) {
@@ -278,6 +375,12 @@ export function validateSettings(input: unknown): SettingsValidationResult {
   }
   if (!settings.promptTemplate.includes("{{override_tag}}")) {
     warnings.push("The template omits {{override_tag}}; user override tags will not be explained to the model.");
+  }
+  if (!settings.storylineTemplate.includes("{{storyline_overview}}")) {
+    issues.push({ field: "storylineTemplate", message: "Storyline template must include {{storyline_overview}}." });
+  }
+  if (!settings.storylineGeneratorTemplate.includes("{{waypoints}}")) {
+    issues.push({ field: "storylineGeneratorTemplate", message: "Overview generator instructions must include {{waypoints}}." });
   }
   if (!validateTagName(settings.handoffTagName)) {
     issues.push({
@@ -308,10 +411,29 @@ export function validateSettings(input: unknown): SettingsValidationResult {
  * drawer from loading. Explicit saves still use validateSettings and reject
  * malformed drafts atomically.
  */
+function upgradeLegacyDefaults(settings: WaypointSettings): WaypointSettings {
+  if (LEGACY_STORYLINE_TEMPLATES.has(settings.storylineTemplate)) settings.storylineTemplate = DEFAULT_STORYLINE_TEMPLATE;
+  if (LEGACY_STORYLINE_GENERATOR_TEMPLATES.has(settings.storylineGeneratorTemplate)) {
+    settings.storylineGeneratorTemplate = DEFAULT_STORYLINE_GENERATOR_TEMPLATE;
+  }
+  return settings;
+}
+
 export function settingsFromStorage(input: unknown): WaypointSettings {
   try {
-    return validateSettings(input).settings;
-  } catch {
+    return upgradeLegacyDefaults(validateSettings(input).settings);
+  } catch (error) {
+    // Drop only the offending fields so one bad value does not discard every
+    // customization (for example a hand-edited prompt template).
+    if (error instanceof SettingsValidationError && isRecord(input)) {
+      const repaired: Record<string, unknown> = { ...input };
+      for (const issue of error.issues) delete repaired[issue.field === "template" ? "promptTemplate" : issue.field];
+      try {
+        return upgradeLegacyDefaults(validateSettings(repaired).settings);
+      } catch {
+        // Fall through to defaults.
+      }
+    }
     return structuredClone(DEFAULT_SETTINGS);
   }
 }

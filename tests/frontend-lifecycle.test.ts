@@ -21,6 +21,16 @@ function status(chatId: string | null): WaypointsView {
     status: chatId ? "Ready: " + name : "Open a character or group chat to use Waypoints.",
     settings: structuredClone(DEFAULT_SETTINGS),
     prompt: { ready: Boolean(chatId), autoPrompt: false, role: "system", insertionDepth: 0, content: chatId ? name + " prompt" : "" },
+    routes: {},
+    storyline: {
+      routeEnabled: true,
+      overviewEnabled: true,
+      characters: chatId ? [{
+        characterId, route: [], effectiveRoute: [0, 1, 2], notes: "", overview: "", generatedAt: null,
+        stale: false, updatedAt: null, generating: false,
+      }] : [],
+      prompt: { ready: false, content: "", characterId: chatId ? characterId : null, position: null, reason: "No narrative overview has been saved for this character." },
+    },
     diagnostics: [],
   };
 }
@@ -162,6 +172,15 @@ class FrontendHost {
           select.onchange = () => options.onChange(select.value);
           target.append(select);
           return { destroy: () => select.remove() };
+        },
+        mountTextArea: (target: HTMLElement, options: { value?: string; disabled?: boolean; ariaLabel?: string; onChange?: (value: string) => void }) => {
+          const area = document.createElement("textarea");
+          area.value = options.value ?? "";
+          area.disabled = Boolean(options.disabled);
+          if (options.ariaLabel) area.setAttribute("aria-label", options.ariaLabel);
+          area.oninput = () => options.onChange?.(area.value);
+          target.append(area);
+          return { destroy: () => area.remove() };
         },
         mountSwitch: (target: HTMLElement, options: { checked: boolean; onChange: (checked: boolean) => void }) => {
           const input = document.createElement("input");
@@ -552,3 +571,59 @@ describe("frontend character switching", () => {
     expect(host.events.size).toBe(0);
   });
 });
+
+describe("frontend storyline designer", () => {
+  test("reorders and excludes greetings, then saves the storyline for the character", async () => {
+    host = new FrontendHost();
+    await host.finishRefreshes();
+    host.button("Storyline").click();
+    expect(host.drawer.textContent).toContain("Ada's storyline");
+    const rows = () => [...host!.drawer.querySelectorAll(".wp-story-row")];
+    expect(rows()).toHaveLength(3);
+    expect(host.button("Save storyline").disabled).toBe(true);
+
+    // Move greeting 3 to the top, and leave greeting 2 out.
+    host.drawer.querySelector<HTMLButtonElement>("[aria-label='Move greeting 3 earlier']")!.click();
+    host.drawer.querySelector<HTMLButtonElement>("[aria-label='Move greeting 3 earlier']")!.click();
+    const skip = host.drawer.querySelector<HTMLInputElement>("[aria-label='Include greeting 2 in the storyline']")!;
+    skip.checked = false;
+    skip.onchange?.(new host.dom.window.Event("change"));
+    expect(rows().map((row) => row.querySelector(".wp-story-step")!.textContent)).toEqual(["1", "2", "–"]);
+    const notes = host.drawer.querySelector<HTMLTextAreaElement>("[aria-label='Author guidance']")!;
+    notes.value = "Slow burn";
+    notes.oninput?.(new host.dom.window.Event("input"));
+    expect(host.drawer.textContent).toContain("Unsaved changes.");
+
+    host.button("Save storyline").click();
+    await flush();
+    const request = host.request("save-storyline");
+    expect(request.input).toEqual({
+      chatId: "chat-a",
+      characterId: "a",
+      storyline: { route: [2, 0], notes: "Slow burn", overview: "" },
+    });
+    const saved = status("chat-a");
+    saved.storyline.characters[0] = { ...saved.storyline.characters[0], route: [2, 0], effectiveRoute: [2, 0], notes: "Slow burn", updatedAt: 1 };
+    host.reply(request, saved);
+    await host.finishRefreshes();
+  });
+
+  test("generates an overview with a long timeout and shows Cancel while it runs", async () => {
+    host = new FrontendHost();
+    host.reply(host.request("refresh"), { ...status("chat-a"), grantedPermissions: ["ui_panels", "generation"] });
+    await flush();
+    host.button("Storyline").click();
+    host.button("Generate overview").click();
+    await flush();
+    const request = host.request("generate-storyline");
+    expect(request.input).toEqual({ chatId: "chat-a", characterId: "a", storyline: { route: [], notes: "" } });
+    expect(host.drawer.textContent).toContain("Generating the narrative overview…");
+    host.button("Cancel").click();
+    expect(host.request("cancel-storyline").input).toEqual({ characterId: "a" });
+    host.reply(request, undefined, "Narrative overview generation was cancelled.");
+    await host.finishRefreshes();
+    expect(host.drawer.textContent).toContain("Narrative overview generation was cancelled.");
+    expect(host.button("Generate overview").disabled).toBe(false);
+  });
+});
+

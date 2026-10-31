@@ -45,6 +45,10 @@ class FakeLumiverse {
     metadata: {},
   };
   settings: unknown = {};
+  readonly files = new Map<string, unknown>();
+  quietResult: unknown = { content: "An overview of the journey.", finish_reason: "stop" };
+  quietCalls: Array<Record<string, unknown>> = [];
+  quietGate?: Promise<void>;
   failAppend = false;
   writeThenThrow = false;
   onDelete?: () => void;
@@ -68,15 +72,41 @@ class FakeLumiverse {
         async getGranted() { return [...owner.granted]; },
       },
       userStorage: {
-        async getJson<T>(_path: string, options?: { fallback?: T }) {
+        async getJson<T>(path: string, options?: { fallback?: T }) {
+          if (path !== "settings.json") return (owner.files.has(path) ? structuredClone(owner.files.get(path)) : options?.fallback) as T;
           return (owner.settings === undefined ? options?.fallback : owner.settings) as T;
         },
-        async setJson(_path: string, value: unknown) { owner.settings = structuredClone(value); },
+        async setJson(path: string, value: unknown) {
+          if (path === "settings.json") owner.settings = structuredClone(value);
+          else owner.files.set(path, structuredClone(value));
+        },
+        async delete(path: string) { owner.files.delete(path); },
       },
       variables: {
         chat: {
           async get(chatId: string, key: string) { return owner.variables.get(chatId + ":" + key) ?? ""; },
           async set(chatId: string, key: string, value: string) { owner.variables.set(chatId + ":" + key, value); },
+        },
+      },
+      generate: {
+        async quiet(input: Record<string, unknown> & { signal?: AbortSignal }) {
+          owner.quietCalls.push(input);
+          if (owner.quietGate) {
+            await Promise.race([
+              owner.quietGate,
+              new Promise<never>((_resolve, reject) => input.signal?.addEventListener("abort", () => {
+                const error = new Error("aborted");
+                error.name = "AbortError";
+                reject(error);
+              })),
+            ]);
+          }
+          return structuredClone(owner.quietResult);
+        },
+      },
+      connections: {
+        async list() {
+          return [{ id: "fast", name: "Fast", model: "small", is_default: false }, { id: "main", name: "Main", model: "big", is_default: true }];
         },
       },
       chats: {
@@ -217,6 +247,15 @@ describe("WaypointEngine prompt and processor", () => {
       nextMessages: ["Greeting 2", "Greeting 3"],
       currentMessage: "Greeting 1",
       nextMessage: "Greeting 2",
+      storylineActive: false,
+      storyline: "",
+      storylineOverview: "",
+      storylinePosition: "Story progress: the story is currently in prewritten scene 1 of 3. "
+        + "The next prewritten scene is 2 of 3; steer toward it gradually. "
+        + "Prewritten scene 3 is an upcoming story beat after that.",
+      currentWaypoint: "1",
+      nextWaypoint: "2",
+      waypointCount: "3",
     });
   });
 
@@ -525,5 +564,139 @@ describe("WaypointEngine transitions", () => {
     host.messages.push({ id: "user", role: "user", content: "<inject-prewritten-content />" });
     expect((await engine.handleHandoff({ chatId: "chat", sourceMessageId: "user", eventKey: "user", content: "<inject-prewritten-content />" })).advanced).toBe(false);
     expect(await engine.processContent({ chatId: "chat", userId: "user", origin: "create", isUser: true, content: "<inject-prewritten-content />" })).toBeUndefined();
+  });
+});
+
+describe("WaypointEngine storylines", () => {
+  test("a saved route reorders and skips greetings for every chat with the character", async () => {
+    const host = new FakeLumiverse(4);
+    const engine = new WaypointEngine(host.api);
+    await engine.saveStoryline("chat", "a", { route: [0, 3, 1], notes: "" });
+    let view = await engine.view("chat");
+    expect(view.routes).toEqual({ a: [0, 3, 1] });
+    expect(view.upcoming?.greetingIndex).toBe(3);
+    expect(view.storyline.characters[0]).toMatchObject({ route: [0, 3, 1], effectiveRoute: [0, 3, 1] });
+
+    await engine.force("chat");
+    view = await engine.view("chat");
+    expect(view.active?.greetingIndex).toBe(3);
+    expect(view.upcoming?.greetingIndex).toBe(1);
+    expect(view.storyline.prompt.position).toEqual({ waypoint: 2, next: 3, total: 3, hasUpcoming: true });
+
+    // Turning the route off in this chat returns to card order from the current greeting.
+    await engine.setStoryRoute("chat", false);
+    view = await engine.view("chat");
+    expect(view.routes).toEqual({});
+    expect(view.upcoming).toBeNull();
+    expect(host.state().storyRoute).toBe(false);
+  });
+
+  test("saving full card order stores the default route, and invalid stops are rejected", async () => {
+    const host = new FakeLumiverse(3);
+    const engine = new WaypointEngine(host.api);
+    await engine.saveStoryline("chat", "a", { route: [0, 1, 2], notes: "n" });
+    expect(host.files.get("storylines/a.json")).toMatchObject({ route: [], notes: "n" });
+    await expect(engine.saveStoryline("chat", "a", { route: [0, 7], notes: "" })).rejects.toThrow("not one of this character's greetings");
+    await expect(engine.saveStoryline("chat", "a", { route: [1, 1], notes: "" })).rejects.toThrow("only once");
+    await expect(engine.saveStoryline("chat", "z", { route: [], notes: "" })).rejects.toThrow("not in this chat");
+  });
+
+  test("generates, saves, and injects a narrative overview that each chat can switch off", async () => {
+    const host = new FakeLumiverse(3);
+    host.settings = { ...DEFAULT_SETTINGS, autoPrompt: true, storylineConnectionId: "fast" };
+    const engine = new WaypointEngine(host.api);
+    await engine.generateStoryline("chat", "a", { route: [0, 2], notes: "Keep it tense" });
+    expect(host.quietCalls).toHaveLength(1);
+    expect(host.quietCalls[0].connection_id).toBe("fast");
+    const sent = (host.quietCalls[0].messages as Array<{ content: string }>)[0].content;
+    expect(sent).toContain("Author guidance: Keep it tense");
+    expect(sent).toContain("### Prewritten scene 2 of 2\nGreeting 3");
+    expect(sent).not.toMatch(/\(greeting \d/);
+    expect(sent).not.toContain("Greeting 2");
+
+    let view = await engine.view("chat");
+    expect(view.storyline.characters[0]).toMatchObject({ overview: "An overview of the journey.", stale: false, notes: "Keep it tense" });
+    expect(view.storyline.prompt.ready).toBe(true);
+    expect(view.storyline.prompt.content).toContain("An overview of the journey.");
+    expect(view.storyline.prompt.content).toContain("prewritten scene 1 of 2. The next prewritten scene is 2 of 2");
+    expect(await engine.loomValues("chat")).toMatchObject({
+      storylineActive: true,
+      storylineOverview: "An overview of the journey.",
+      currentWaypoint: "1",
+      nextWaypoint: "2",
+      waypointCount: "2",
+    });
+
+    const result = await engine.intercept([{ role: "system", content: "old" }, { role: "user", content: "new" }], "chat");
+    const intercepted = result as Exclude<typeof result, unknown[]>;
+    expect(intercepted.messages.map((message) => message.content.slice(0, 20))).toEqual([
+      "old", "new", "<storyline_overview>", "<shape_scene_directi",
+    ]);
+    expect(intercepted.breakdown).toEqual([
+      { messageIndex: 2, name: "Waypoints: storyline overview" },
+      { messageIndex: 3, name: "Waypoints: upcoming scene" },
+    ]);
+
+    // Changing the route marks the overview stale; the chat toggle removes it from prompts.
+    await engine.saveStoryline("chat", "a", { route: [0, 1, 2], notes: "Keep it tense" });
+    expect((await engine.view("chat")).storyline.characters[0].stale).toBe(true);
+    await engine.setStoryOverview("chat", false);
+    view = await engine.view("chat");
+    expect(view.storyline.prompt).toMatchObject({ ready: false, reason: "The narrative overview is off for this chat." });
+    const plain = await engine.intercept([{ role: "user", content: "new" }], "chat") as Exclude<Awaited<ReturnType<typeof engine.intercept>>, unknown[]>;
+    expect(plain.breakdown).toEqual([{ messageIndex: 1, name: "Waypoints: upcoming scene" }]);
+
+    // Clearing the overview by hand resets its generation stamp.
+    await engine.saveStoryline("chat", "a", { route: [0, 1, 2], notes: "", overview: "  " });
+    expect(host.files.get("storylines/a.json")).toMatchObject({ generatedAt: null, overviewSignature: "" });
+    await engine.deleteStoryline("chat", "a");
+    expect(host.files.has("storylines/a.json")).toBe(false);
+  });
+
+  test("a cancelled or empty generation leaves the saved storyline untouched", async () => {
+    const host = new FakeLumiverse(3);
+    const engine = new WaypointEngine(host.api);
+    let release!: () => void;
+    host.quietGate = new Promise<void>((resolve) => { release = resolve; });
+    const running = engine.generateStoryline("chat", "a", { route: [], notes: "" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(engine.isGeneratingStoryline("a")).toBe(true);
+    expect((await engine.view("chat")).storyline.characters[0].generating).toBe(true);
+    await expect(engine.generateStoryline("chat", "a", { route: [], notes: "" })).rejects.toThrow("already being generated");
+    expect(engine.cancelStorylineGeneration("a")).toBe(true);
+    await expect(running).rejects.toThrow("cancelled");
+    release();
+    expect(engine.isGeneratingStoryline("a")).toBe(false);
+    host.quietGate = undefined;
+    host.quietResult = { content: "<think>only thoughts</think>" };
+    await expect(engine.generateStoryline("chat", "a", { route: [], notes: "" })).rejects.toThrow("empty narrative overview");
+    expect(host.files.size).toBe(0);
+  });
+
+  test("keeps other Waypoints card data when the character switch changes", async () => {
+    const host = new FakeLumiverse(3);
+    host.characters.get("a")!.extensions = { lumiverse_waypoints: { enabled: true, other: 1 } };
+    const engine = new WaypointEngine(host.api);
+    await engine.setEnabled("chat", "a", false);
+    expect(host.characters.get("a")!.extensions.lumiverse_waypoints).toEqual({ enabled: false, other: 1 });
+  });
+
+  test("the interceptor returns the original prompt when the chat cannot be read", async () => {
+    const host = new FakeLumiverse(3);
+    host.settings = { ...DEFAULT_SETTINGS, autoPrompt: true };
+    const engine = new WaypointEngine(host.api);
+    const messages = [{ role: "user" as const, content: "hi" }];
+    expect(await engine.intercept(messages, "missing-chat")).toBe(messages);
+  });
+
+  test("lists connection profiles for the generator", async () => {
+    const host = new FakeLumiverse(3);
+    const engine = new WaypointEngine(host.api);
+    expect(await engine.listConnections()).toEqual([
+      { id: "fast", name: "Fast", model: "small", isDefault: false },
+      { id: "main", name: "Main", model: "big", isDefault: true },
+    ]);
+    host.granted.delete("generation");
+    expect(await engine.listConnections()).toEqual([]);
   });
 });

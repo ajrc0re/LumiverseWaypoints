@@ -3,15 +3,15 @@ import type {
   ChatGreetingSource,
   Greeting,
   GreetingContext,
+  GreetingRoutes,
   GreetingSelection,
   PendingHandoff,
   TransitionJournal,
   WaypointChatState,
 } from "./types";
+import { resolveRoute } from "./storyline";
+import { isRecord } from "./util";
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value)
@@ -65,6 +65,8 @@ export function emptyChatState(): WaypointChatState {
     active: null,
     upcoming: null,
     groupEnabledByCharacter: {},
+    storyRoute: true,
+    storyOverview: true,
     pendingHandoffs: [],
     recentTransitionKeys: [],
     journal: null,
@@ -87,6 +89,8 @@ export function parseChatState(value: string | undefined | null): WaypointChatSt
       active: selectionFrom(parsed.active),
       upcoming: selectionFrom(parsed.upcoming),
       groupEnabledByCharacter,
+      storyRoute: parsed.storyRoute !== false,
+      storyOverview: parsed.storyOverview !== false,
       pendingHandoffs: pendingFrom(parsed.pendingHandoffs),
       recentTransitionKeys: stringArray(parsed.recentTransitionKeys),
       journal: journalFrom(parsed.journal),
@@ -170,11 +174,26 @@ export function firstGreetingForCharacter(
     : null;
 }
 
+/** Route stops after the selection, or the whole route when the selection is off it. */
+function routeCandidates(route: readonly number[], selection: GreetingSelection): number[] {
+  const position = route.indexOf(selection.greetingIndex);
+  return (position >= 0 ? route.slice(position + 1) : [...route]).filter((index) => index !== selection.greetingIndex);
+}
+
 export function nextGreetingForSelection(
   greetings: readonly Greeting[],
   selection: GreetingSelection | null,
+  routes?: GreetingRoutes,
 ): GreetingSelection | null {
   if (!selection) return null;
+  const route = routes?.[selection.characterId];
+  if (route?.length) {
+    for (const greetingIndex of routeCandidates(route, selection)) {
+      const candidate = { characterId: selection.characterId, greetingIndex };
+      if (greetingForSelection(greetings, candidate)) return candidate;
+    }
+    return null;
+  }
   const following = greetings.find(
     (entry) =>
       entry.characterId === selection.characterId &&
@@ -190,6 +209,7 @@ export function nextGreetingChoices(
   greetings: readonly Greeting[],
   active: Greeting | null,
   isGroupChat: boolean,
+  routes?: GreetingRoutes,
 ): Greeting[] {
   if (!active) return [...greetings];
   if (isGroupChat) {
@@ -197,28 +217,50 @@ export function nextGreetingChoices(
       greeting.characterId !== active.characterId || greeting.greetingIndex !== active.greetingIndex,
     );
   }
+  const route = routes?.[active.characterId];
+  if (route?.length) {
+    return routeCandidates(route, active).flatMap((greetingIndex) => {
+      const greeting = greetingForSelection(greetings, { characterId: active.characterId, greetingIndex });
+      return greeting ? [greeting] : [];
+    });
+  }
   return greetings.filter((greeting) =>
     greeting.characterId === active.characterId && greeting.greetingIndex > active.greetingIndex,
   );
 }
 
-export function defaultSelections(context: GreetingContext): Pick<WaypointChatState, "active" | "upcoming"> {
+/** Custom storyline routes this chat follows. Characters without one keep card order. */
+export function chatRoutes(context: GreetingContext, state: Pick<WaypointChatState, "storyRoute">): Record<string, number[]> {
+  const routes: Record<string, number[]> = {};
+  if (!state.storyRoute) return routes;
+  for (const characterId of context.characterIds) {
+    const route = resolveRoute(context.storylines?.[characterId], context.greetings);
+    if (route.length) routes[characterId] = route;
+  }
+  return routes;
+}
+
+export function defaultSelections(
+  context: GreetingContext,
+  routes?: GreetingRoutes,
+): Pick<WaypointChatState, "active" | "upcoming"> {
   const active =
     firstGreetingForCharacter(context.greetings, context.primaryCharacterId) ??
     (context.greetings[0]
       ? { characterId: context.greetings[0].characterId, greetingIndex: context.greetings[0].greetingIndex }
       : null);
-  return { active, upcoming: nextGreetingForSelection(context.greetings, active) };
+  return { active, upcoming: nextGreetingForSelection(context.greetings, active, routes) };
 }
 
 export function reconcileChatState(
   state: WaypointChatState,
   context: GreetingContext,
 ): WaypointChatState {
-  const defaults = defaultSelections(context);
+  const routes = chatRoutes(context, state);
+  const defaults = defaultSelections(context, routes);
   const active = greetingForSelection(context.greetings, state.active) ? state.active : defaults.active;
-  let upcoming = greetingForSelection(context.greetings, state.upcoming) ? state.upcoming : nextGreetingForSelection(context.greetings, active);
-  if (sameSelection(active, upcoming)) upcoming = nextGreetingForSelection(context.greetings, active);
+  let upcoming = greetingForSelection(context.greetings, state.upcoming) ? state.upcoming : nextGreetingForSelection(context.greetings, active, routes);
+  if (sameSelection(active, upcoming)) upcoming = nextGreetingForSelection(context.greetings, active, routes);
   const allowedCharacters = new Set(context.characterIds);
   const enabled: Record<string, boolean> = {};
   for (const [characterId, value] of Object.entries(state.groupEnabledByCharacter)) {

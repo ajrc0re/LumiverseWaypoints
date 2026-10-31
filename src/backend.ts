@@ -4,7 +4,7 @@ import type {
   SpindleAPI,
 } from "lumiverse-spindle-types";
 import { DEFAULT_SETTINGS } from "./config";
-import { WaypointEngine } from "./engine";
+import { WaypointEngine, type StorylineDraftInput } from "./engine";
 import { handoffSignal } from "./handoff-events";
 import { registerWaypointsLoomMacros } from "./loom-macros";
 import type { GreetingSelection, WaypointSettings } from "./types";
@@ -109,6 +109,22 @@ function parseSelection(value: unknown, required: boolean): GreetingSelection | 
   return { characterId: source.characterId, greetingIndex: Number(source.greetingIndex) };
 }
 
+function parseStorylineDraft(value: unknown): StorylineDraftInput {
+  const source = safeRecord(value);
+  if (source.route !== undefined && !Array.isArray(source.route)) throw new Error("A storyline route must be a list of greetings.");
+  return {
+    route: Array.isArray(source.route) ? source.route as number[] : [],
+    notes: typeof source.notes === "string" ? source.notes : "",
+    overview: typeof source.overview === "string" ? source.overview : undefined,
+  };
+}
+
+function requireCharacterId(input: Record<string, unknown>): string {
+  const characterId = stringValue(input.characterId);
+  if (!characterId) throw new Error("Choose a character.");
+  return characterId;
+}
+
 async function handleRequest(raw: unknown, userId?: string): Promise<void> {
   const request = safeRecord(raw);
   if (request.type !== "waypoints:request" || typeof request.requestId !== "string" || typeof request.action !== "string") return;
@@ -170,6 +186,46 @@ async function handleRequest(raw: unknown, userId?: string): Promise<void> {
           view: await current.view(selectedChatId),
         };
         break;
+      case "set-story-route":
+        if (!selectedChatId || typeof input.enabled !== "boolean") throw new Error("Choose a chat and an enabled state.");
+        await current.setStoryRoute(selectedChatId, input.enabled);
+        result = await current.view(selectedChatId);
+        break;
+      case "set-story-overview":
+        if (!selectedChatId || typeof input.enabled !== "boolean") throw new Error("Choose a chat and an enabled state.");
+        await current.setStoryOverview(selectedChatId, input.enabled);
+        result = await current.view(selectedChatId);
+        break;
+      case "save-storyline":
+        if (!selectedChatId) throw new Error("No active chat is available.");
+        await current.saveStoryline(selectedChatId, requireCharacterId(input), parseStorylineDraft(input.storyline));
+        result = await current.view(selectedChatId);
+        break;
+      case "delete-storyline":
+        if (!selectedChatId) throw new Error("No active chat is available.");
+        await current.deleteStoryline(selectedChatId, requireCharacterId(input));
+        result = await current.view(selectedChatId);
+        break;
+      case "generate-storyline": {
+        if (!selectedChatId) throw new Error("No active chat is available.");
+        const characterId = requireCharacterId(input);
+        const draft = parseStorylineDraft(input.storyline);
+        notifyChanged(userId, "storyline");
+        try {
+          await current.generateStoryline(selectedChatId, characterId, { route: draft.route, notes: draft.notes });
+        } finally {
+          // Any open drawer (or this one after a chat switch) picks the result up.
+          notifyChanged(userId, "storyline");
+        }
+        result = await current.view(selectedChatId);
+        break;
+      }
+      case "cancel-storyline":
+        result = { cancelled: current.cancelStorylineGeneration(requireCharacterId(input)) };
+        break;
+      case "list-connections":
+        result = await current.listConnections();
+        break;
       case "clear-diagnostics":
         current.clearDiagnostics();
         result = await current.view(selectedChatId);
@@ -228,9 +284,7 @@ for (const eventName of [
 ]) {
   spindle.on(eventName, (_payload, userId) => {
     notifyChanged(userId, eventName.toLowerCase());
-    if (["CHAT_SWITCHED", "CHAT_CHANGED", "CHARACTER_EDITED", "CHARACTER_DELETED", "GENERATION_STARTED"].includes(eventName)) {
-      void refreshAlternateGreetingMacros(userId);
-    }
+    void refreshAlternateGreetingMacros(userId);
   });
 }
 
