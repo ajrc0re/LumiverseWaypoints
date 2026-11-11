@@ -26,7 +26,7 @@ function status(chatId: string | null): WaypointsView {
       routeEnabled: true,
       overviewEnabled: true,
       characters: chatId ? [{
-        characterId, route: [], effectiveRoute: [0, 1, 2], notes: "", overview: "", generatedAt: null,
+        characterId, route: [], effectiveRoute: [0, 1, 2], notes: "", includePersona: true, includeCharacter: true, overview: "", generatedAt: null,
         stale: false, updatedAt: null, generating: false,
       }] : [],
       prompt: { ready: false, content: "", characterId: chatId ? characterId : null, position: null, reason: "No narrative overview has been saved for this character." },
@@ -181,6 +181,15 @@ class FrontendHost {
           area.oninput = () => options.onChange?.(area.value);
           target.append(area);
           return { destroy: () => area.remove() };
+        },
+        mountCheckbox: (target: HTMLElement, options: { checked?: boolean; label?: string; onChange?: (checked: boolean) => void }) => {
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.checked = Boolean(options.checked);
+          if (options.label) input.setAttribute("aria-label", options.label);
+          input.onchange = () => options.onChange?.(input.checked);
+          target.append(input);
+          return { destroy: () => input.remove() };
         },
         mountSwitch: (target: HTMLElement, options: { checked: boolean; onChange: (checked: boolean) => void }) => {
           const input = document.createElement("input");
@@ -592,6 +601,10 @@ describe("frontend storyline designer", () => {
     const notes = host.drawer.querySelector<HTMLTextAreaElement>("[aria-label='Author guidance']")!;
     notes.value = "Slow burn";
     notes.oninput?.(new host.dom.window.Event("input"));
+    const persona = host.drawer.querySelector<HTMLInputElement>("[aria-label='Include the current user persona']")!;
+    expect(persona.checked).toBe(true);
+    persona.checked = false;
+    persona.onchange?.(new host.dom.window.Event("change"));
     expect(host.drawer.textContent).toContain("Unsaved changes.");
 
     host.button("Save storyline").click();
@@ -600,7 +613,7 @@ describe("frontend storyline designer", () => {
     expect(request.input).toEqual({
       chatId: "chat-a",
       characterId: "a",
-      storyline: { route: [2, 0], notes: "Slow burn", overview: "" },
+      storyline: { route: [2, 0], notes: "Slow burn", includePersona: false, includeCharacter: true, overview: "" },
     });
     const saved = status("chat-a");
     saved.storyline.characters[0] = { ...saved.storyline.characters[0], route: [2, 0], effectiveRoute: [2, 0], notes: "Slow burn", updatedAt: 1 };
@@ -616,7 +629,9 @@ describe("frontend storyline designer", () => {
     host.button("Generate overview").click();
     await flush();
     const request = host.request("generate-storyline");
-    expect(request.input).toEqual({ chatId: "chat-a", characterId: "a", storyline: { route: [], notes: "" } });
+    expect(request.input).toEqual({
+      chatId: "chat-a", characterId: "a", storyline: { route: [], notes: "", includePersona: true, includeCharacter: true },
+    });
     expect(host.drawer.textContent).toContain("Generating the narrative overview…");
     host.button("Cancel").click();
     expect(host.request("cancel-storyline").input).toEqual({ characterId: "a" });

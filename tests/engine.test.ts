@@ -49,6 +49,7 @@ class FakeLumiverse {
   quietResult: unknown = { content: "An overview of the journey.", finish_reason: "stop" };
   quietCalls: Array<Record<string, unknown>> = [];
   quietGate?: Promise<void>;
+  resolveCalls: Array<{ text: string; options: Record<string, unknown> }> = [];
   failAppend = false;
   writeThenThrow = false;
   onDelete?: () => void;
@@ -86,6 +87,12 @@ class FakeLumiverse {
         chat: {
           async get(chatId: string, key: string) { return owner.variables.get(chatId + ":" + key) ?? ""; },
           async set(chatId: string, key: string, value: string) { owner.variables.set(chatId + ":" + key, value); },
+        },
+      },
+      macros: {
+        async resolve(text: string, options: Record<string, unknown>) {
+          owner.resolveCalls.push({ text, options });
+          return { text: text.split("{{user}}").join("Aaron").split("{{char}}").join("Ada").split("{{persona}}").join("A bank teller."), diagnostics: [] };
         },
       },
       generate: {
@@ -610,6 +617,11 @@ describe("WaypointEngine storylines", () => {
     expect(host.quietCalls[0].connection_id).toBe("fast");
     const sent = (host.quietCalls[0].messages as Array<{ content: string }>)[0].content;
     expect(sent).toContain("Author guidance: Keep it tense");
+    // Macros are expanded for the chat before the prompt is sent.
+    expect(sent).not.toContain("{{");
+    expect(sent).toContain("between Ada and Aaron");
+    expect(sent).toContain("User's persona: A bank teller.");
+    expect(host.resolveCalls[0].options).toMatchObject({ chatId: "chat", characterId: "a", commit: false });
     expect(sent).toContain("### Prewritten scene 2 of 2\nGreeting 3");
     expect(sent).not.toMatch(/\(greeting \d/);
     expect(sent).not.toContain("Greeting 2");
@@ -698,5 +710,23 @@ describe("WaypointEngine storylines", () => {
     ]);
     host.granted.delete("generation");
     expect(await engine.listConnections()).toEqual([]);
+  });
+  test("expands macros in injected prompts and honors the generator context checkboxes", async () => {
+    const host = new FakeLumiverse(3);
+    host.characters.get("a")!.alternate_greetings = ["{{user}} meets {{char}} at the bank.", "Greeting 3"];
+    host.settings = { ...DEFAULT_SETTINGS, autoPrompt: true };
+    const engine = new WaypointEngine(host.api);
+    const result = await engine.intercept([{ role: "user", content: "hi" }], "chat") as Exclude<Awaited<ReturnType<typeof engine.intercept>>, unknown[]>;
+    expect(result.messages[1].content).toContain("Aaron meets Ada at the bank.");
+
+    await engine.generateStoryline("chat", "a", { route: [], notes: "", includePersona: false, includeCharacter: false });
+    const sent = (host.quietCalls[0].messages as Array<{ content: string }>)[0].content;
+    expect(sent).not.toContain("A bank teller.");
+    expect(sent).toContain("User's character: Aaron");
+    expect(host.files.get("storylines/a.json")).toMatchObject({ includePersona: false, includeCharacter: false });
+    expect((await engine.view("chat")).storyline.characters[0]).toMatchObject({ includePersona: false, includeCharacter: false });
+    // A save without the flags keeps the stored choice.
+    await engine.saveStoryline("chat", "a", { route: [], notes: "" });
+    expect(host.files.get("storylines/a.json")).toMatchObject({ includePersona: false });
   });
 });

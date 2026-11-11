@@ -15,6 +15,7 @@ import {
   describePosition,
   effectiveRoute,
   emptyStoryline,
+  finishResolvedGeneratorPrompt,
   generatedText,
   isOverviewStale,
   parseStoryline,
@@ -136,6 +137,8 @@ describe("storyline prompts", () => {
       character: { name: "Ada", description: "A knight", scenario: "" },
       route: [greetings(["<div>Hidden</div>Tavern"])[0], { ...greetings(["", "x".repeat(300)])[1] }],
       notes: "Slow burn",
+      includePersona: true,
+      includeCharacter: true,
     });
     expect(prompt).toContain("### Prewritten scene 1 of 2\nHiddenTavern");
     expect(prompt).not.toContain("<div>");
@@ -143,7 +146,17 @@ describe("storyline prompts", () => {
     expect(prompt).not.toMatch(/greeting/i);
     expect(prompt).toContain("[…truncated]");
     expect(prompt).toContain("Author guidance: Slow burn");
-    expect(prompt).toContain("Scenario: (none)");
+    expect(prompt).toContain("Description: A knight");
+    expect(prompt).not.toContain("Scenario:");
+    expect(prompt).toContain("User's character: {{user}}\nUser's persona: {{persona}}");
+    expect(prompt).toContain("between Ada and {{user}}");
+    const bare = renderGeneratorPrompt(DEFAULT_SETTINGS, {
+      character: { name: "Ada", description: "A knight" }, route: greetings(["Tavern"]), notes: "", includePersona: false, includeCharacter: false,
+    });
+    expect(bare).not.toContain("A knight");
+    expect(bare).not.toContain("{{persona}}");
+    expect(bare).toContain("User's character: {{user}}");
+    expect(finishResolvedGeneratorPrompt("{{user}} / {{persona}}")).toBe("the user / (none)");
   });
 
   test("reads generated text from response objects and strips reasoning blocks", () => {
@@ -172,13 +185,20 @@ describe("storyline prompts", () => {
     expect(legacy).not.toBe(DEFAULT_SETTINGS.storylineTemplate);
     expect(settingsFromStorage({ ...DEFAULT_SETTINGS, storylineTemplate: legacy }).storylineTemplate).toBe(DEFAULT_SETTINGS.storylineTemplate);
     expect(settingsFromStorage({ ...DEFAULT_SETTINGS, storylineTemplate: legacy + " edited" }).storylineTemplate).toEndWith(" edited");
+    const legacyGenerator = DEFAULT_SETTINGS.storylineGeneratorTemplate
+      .replace("between {{character_name}} and {{user_name}}.", "with {{character_name}}.")
+      .replace("improvises with {{user_name}} and", "improvises with the user and")
+      .replace(" Call everyone by name: write {{user_name}}, never \"the user\" or \"you\".", "")
+      .replace("{{story_context}}", "Character: {{character_name}}\nDescription: {{character_description}}\nPersonality: {{character_personality}}\nScenario: {{character_scenario}}");
+    expect(settingsFromStorage({ ...DEFAULT_SETTINGS, storylineGeneratorTemplate: legacyGenerator }).storylineGeneratorTemplate)
+      .toBe(DEFAULT_SETTINGS.storylineGeneratorTemplate);
   });
 });
 
 describe("storyline drafts", () => {
   const cards = greetings(["Tavern", "Road", "Castle", "Siege"]);
   const saved: StorylineCharacterView = {
-    characterId: "a", route: [2, 0], effectiveRoute: [2, 0], notes: "", overview: "", generatedAt: null,
+    characterId: "a", route: [2, 0], effectiveRoute: [2, 0], notes: "", includePersona: true, includeCharacter: true, overview: "", generatedAt: null,
     stale: false, updatedAt: 1, generating: false,
   };
 

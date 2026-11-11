@@ -1067,7 +1067,13 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     await rpc("save-storyline", {
       chatId: requireCurrentChatId(),
       characterId: saved.characterId,
-      storyline: { route, notes: draft.notes, overview: draft.overview },
+      storyline: {
+        route,
+        notes: draft.notes,
+        includePersona: draft.includePersona,
+        includeCharacter: draft.includeCharacter,
+        overview: draft.overview,
+      },
     });
     storyDrafts.delete(saved.characterId);
     await load();
@@ -1107,7 +1113,12 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       await rpc("generate-storyline", {
         chatId,
         characterId,
-        storyline: { route: storylineDraftRoute(draft, view.greetings), notes: draft.notes },
+        storyline: {
+          route: storylineDraftRoute(draft, view.greetings),
+          notes: draft.notes,
+          includePersona: draft.includePersona,
+          includeCharacter: draft.includeCharacter,
+        },
       }, GENERATION_TIMEOUT_MS);
       if (!isCurrentSelection(version)) return;
       // The backend saved the route, guidance, and overview together.
@@ -1274,6 +1285,25 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         },
       }),
     );
+
+    const contextOptions: Array<[keyof Pick<StorylineDraft, "includeCharacter" | "includePersona">, string, string]> = [
+      ["includeCharacter", "Include character description, personality, and scenario", "Gives the generator the character card's details."],
+      ["includePersona", "Include the current user persona", "Gives the generator your persona's description. Your name is always used either way."],
+    ];
+    for (const [key, label, hint] of contextOptions) {
+      const target = element("div", "wp-native");
+      section.append(target);
+      componentHandles.push(ctx.components.mountCheckbox(target, {
+        checked: draft[key],
+        label,
+        hint,
+        disabled: generating,
+        onChange: (checked) => {
+          draft[key] = checked;
+          updateDirty();
+        },
+      }));
+    }
 
     const generateRow = element("div", "wp-actions");
     if (generating) {
@@ -1536,7 +1566,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         },
       }),
     );
-    addField(settings, "Overview generator instructions", "Sent to the model by Generate overview. Required: {{waypoints}}. Optional: {{character_name}}, {{character_description}}, {{character_personality}}, {{character_scenario}}, {{author_notes}}, and {{waypoint_count}}.", (target) =>
+    addField(settings, "Overview generator instructions", "Sent to the model by Generate overview. Required: {{waypoints}}. Optional: {{story_context}} (character and persona details chosen in the Storyline tab), {{character_name}}, {{user_name}}, {{character_description}}, {{character_personality}}, {{character_scenario}}, {{user_persona}}, {{author_notes}}, and {{waypoint_count}}. Lumiverse macros such as {{user}} and {{char}} are expanded before sending.", (target) =>
       ctx.components.mountTextArea(target, {
         value: draft.storylineGeneratorTemplate,
         rows: 12,

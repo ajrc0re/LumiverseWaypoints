@@ -24,6 +24,8 @@ export function emptyStoryline(characterId: string): CharacterStoryline {
     characterId,
     route: [],
     notes: "",
+    includePersona: true,
+    includeCharacter: true,
     overview: "",
     overviewSignature: "",
     generatedAt: null,
@@ -55,6 +57,8 @@ export function parseStoryline(value: unknown, characterId: string): CharacterSt
     characterId,
     route: routeEntriesFrom(value.route),
     notes: text(value.notes, STORYLINE_NOTES_LIMIT),
+    includePersona: value.includePersona !== false,
+    includeCharacter: value.includeCharacter !== false,
     overview: text(value.overview, STORYLINE_OVERVIEW_LIMIT),
     overviewSignature: typeof value.overviewSignature === "string" ? value.overviewSignature : "",
     generatedAt: Number.isFinite(value.generatedAt) ? Number(value.generatedAt) : null,
@@ -215,6 +219,22 @@ export interface GeneratorInput {
   character: Pick<CharacterGreetingSource, "name" | "description" | "personality" | "scenario">;
   route: readonly Greeting[];
   notes: string;
+  includePersona: boolean;
+  includeCharacter: boolean;
+}
+
+/**
+ * Lumiverse macros the generator prompt leaves for the host's macro engine,
+ * so the user's name and persona match what the chat itself would use.
+ */
+export const USER_NAME_MACRO = "{{user}}";
+export const USER_PERSONA_MACRO = "{{persona}}";
+
+/** Cleans up after macro resolution, in case the host left a macro unexpanded. */
+export function finishResolvedGeneratorPrompt(text: string): string {
+  return text
+    .split(USER_PERSONA_MACRO).join("(none)")
+    .split(USER_NAME_MACRO).join("the user");
 }
 
 function clip(value: string, limit: number): string {
@@ -232,11 +252,29 @@ export function renderGeneratorPrompt(
       + clip(filtered || greeting.text, settings.storylineWaypointCharLimit);
   }).join("\n\n");
   const notes = input.notes.trim();
+  const field = (value: string | undefined) => (value ?? "").trim();
+  const name = input.character.name || "the character";
+  const omitted = "(not included)";
+  const context = ["Character: " + name];
+  if (input.includeCharacter) {
+    for (const [label, value] of [
+      ["Description", input.character.description],
+      ["Personality", input.character.personality],
+      ["Scenario", input.character.scenario],
+    ] as const) {
+      if (field(value)) context.push(label + ": " + field(value));
+    }
+  }
+  context.push("", "User's character: " + USER_NAME_MACRO);
+  if (input.includePersona) context.push("User's persona: " + USER_PERSONA_MACRO);
   return substitute(settings.storylineGeneratorTemplate, {
-    character_name: input.character.name || "the character",
-    character_description: (input.character.description ?? "").trim() || "(none)",
-    character_personality: (input.character.personality ?? "").trim() || "(none)",
-    character_scenario: (input.character.scenario ?? "").trim() || "(none)",
+    character_name: name,
+    character_description: input.includeCharacter ? field(input.character.description) || "(none)" : omitted,
+    character_personality: input.includeCharacter ? field(input.character.personality) || "(none)" : omitted,
+    character_scenario: input.includeCharacter ? field(input.character.scenario) || "(none)" : omitted,
+    user_name: USER_NAME_MACRO,
+    user_persona: input.includePersona ? USER_PERSONA_MACRO : omitted,
+    story_context: context.join("\n"),
     author_notes: notes || "(none)",
     waypoint_count: String(total),
     waypoints,

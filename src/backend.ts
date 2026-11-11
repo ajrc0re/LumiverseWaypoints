@@ -115,6 +115,8 @@ function parseStorylineDraft(value: unknown): StorylineDraftInput {
   return {
     route: Array.isArray(source.route) ? source.route as number[] : [],
     notes: typeof source.notes === "string" ? source.notes : "",
+    includePersona: typeof source.includePersona === "boolean" ? source.includePersona : undefined,
+    includeCharacter: typeof source.includeCharacter === "boolean" ? source.includeCharacter : undefined,
     overview: typeof source.overview === "string" ? source.overview : undefined,
   };
 }
@@ -212,7 +214,7 @@ async function handleRequest(raw: unknown, userId?: string): Promise<void> {
         const draft = parseStorylineDraft(input.storyline);
         notifyChanged(userId, "storyline");
         try {
-          await current.generateStoryline(selectedChatId, characterId, { route: draft.route, notes: draft.notes });
+          await current.generateStoryline(selectedChatId, characterId, { route: draft.route, notes: draft.notes, includePersona: draft.includePersona, includeCharacter: draft.includeCharacter });
         } finally {
           // Any open drawer (or this one after a chat switch) picks the result up.
           notifyChanged(userId, "storyline");

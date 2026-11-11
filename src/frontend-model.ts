@@ -61,13 +61,17 @@ export interface StorylineDraft {
   order: number[];
   excluded: number[];
   notes: string;
+  includePersona: boolean;
+  includeCharacter: boolean;
   overview: string;
   /** Saved values this draft started from, to tell local edits from remote updates. */
   base: string;
 }
 
-function savedKey(route: readonly number[], notes: string, overview: string): string {
-  return JSON.stringify([route, notes, overview]);
+type StorylineFields = Pick<StorylineCharacterView, "notes" | "includePersona" | "includeCharacter" | "overview">;
+
+function savedKey(route: readonly number[], fields: StorylineFields): string {
+  return JSON.stringify([route, fields.notes, fields.includePersona, fields.includeCharacter, fields.overview]);
 }
 
 export function storylineDraftFromSaved(saved: StorylineCharacterView, greetings: readonly Greeting[]): StorylineDraft {
@@ -78,8 +82,10 @@ export function storylineDraftFromSaved(saved: StorylineCharacterView, greetings
     order: [...route, ...own.filter((index) => !route.includes(index))],
     excluded: own.filter((index) => !route.includes(index)),
     notes: saved.notes,
+    includePersona: saved.includePersona,
+    includeCharacter: saved.includeCharacter,
     overview: saved.overview,
-    base: savedKey(saved.route, saved.notes, saved.overview),
+    base: savedKey(saved.route, saved),
   };
 }
 
@@ -95,11 +101,11 @@ export function storylineDraftStops(draft: StorylineDraft): number[] {
 }
 
 function draftKey(draft: StorylineDraft, greetings: readonly Greeting[]): string {
-  return savedKey(storylineDraftRoute(draft, greetings), draft.notes, draft.overview);
+  return savedKey(storylineDraftRoute(draft, greetings), draft);
 }
 
 export function storylineDraftDirty(draft: StorylineDraft, saved: StorylineCharacterView, greetings: readonly Greeting[]): boolean {
-  return draftKey(draft, greetings) !== savedKey(saved.route, saved.notes, saved.overview);
+  return draftKey(draft, greetings) !== savedKey(saved.route, saved);
 }
 
 /**

@@ -15,6 +15,7 @@ import {
   describePosition,
   effectiveRoute,
   emptyStoryline,
+  finishResolvedGeneratorPrompt,
   generatedText,
   isOverviewStale,
   parseStoryline,
@@ -76,6 +77,9 @@ export interface StorylineDraftInput {
   /** Greeting indices in story order. Empty or full card order means "every greeting in card order". */
   route: number[];
   notes: string;
+  /** Omitted fields keep their saved value (or the default, on). */
+  includePersona?: boolean;
+  includeCharacter?: boolean;
   overview?: string;
 }
 
@@ -877,6 +881,8 @@ export class WaypointEngine {
       ...previous,
       route: routeEntries(indices, context.greetings, characterId),
       notes,
+      includePersona: typeof input.includePersona === "boolean" ? input.includePersona : previous.includePersona,
+      includeCharacter: typeof input.includeCharacter === "boolean" ? input.includeCharacter : previous.includeCharacter,
       updatedAt: Date.now(),
     };
     if (overview !== undefined) {
@@ -934,7 +940,14 @@ export class WaypointEngine {
       return greeting ? [greeting] : [];
     });
     if (!greetings.length) throw new Error("This character has no greetings to build a storyline from.");
-    const prompt = renderGeneratorPrompt(settings, { character, route: greetings, notes });
+    const saved = await this.storyline(characterId) ?? emptyStoryline(characterId);
+    const includePersona = typeof input.includePersona === "boolean" ? input.includePersona : saved.includePersona;
+    const includeCharacter = typeof input.includeCharacter === "boolean" ? input.includeCharacter : saved.includeCharacter;
+    const prompt = finishResolvedGeneratorPrompt(await this.resolveMacros(
+      renderGeneratorPrompt(settings, { character, route: greetings, notes, includePersona, includeCharacter }),
+      chatId,
+      characterId,
+    ));
 
     const controller = new AbortController();
     this.generations.set(characterId, controller);
@@ -968,6 +981,8 @@ export class WaypointEngine {
       ...previous,
       route: routeEntries(indices, context.greetings, characterId),
       notes,
+      includePersona,
+      includeCharacter,
       overview,
       overviewSignature: routeSignature(route, context.greetings, characterId),
       generatedAt: now,
@@ -975,6 +990,27 @@ export class WaypointEngine {
     });
     this.note("narrative overview generated for " + characterId + " (" + String(overview.length) + " characters)");
     if (!sameRoute(previousRoute, indices)) await this.replanChat(chatId, characterId);
+  }
+
+  /**
+   * Expands Lumiverse macros such as {{user}}, {{char}}, and {{persona}} the
+   * way the chat itself would, without committing side effects. Text without
+   * macros skips the round trip; a failed resolve keeps the text as it was.
+   */
+  private async resolveMacros(text: string, chatId: string, characterId?: string): Promise<string> {
+    if (!text.includes("{{")) return text;
+    try {
+      const result = await this.api.macros.resolve(text, {
+        chatId,
+        ...(characterId ? { characterId } : {}),
+        ...(this.userId ? { userId: this.userId } : {}),
+        commit: false,
+      });
+      return typeof result?.text === "string" ? result.text : text;
+    } catch (error) {
+      this.warn("macro expansion skipped: " + (error instanceof Error ? error.message : String(error)));
+      return text;
+    }
   }
 
   async listConnections(): Promise<ConnectionChoice[]> {
@@ -1027,6 +1063,8 @@ export class WaypointEngine {
         route: resolveRoute(storyline, context.greetings),
         effectiveRoute: effectiveRoute(storyline, context.greetings, characterId),
         notes: storyline?.notes ?? "",
+        includePersona: storyline?.includePersona ?? true,
+        includeCharacter: storyline?.includeCharacter ?? true,
         overview: storyline?.overview ?? "",
         generatedAt: storyline?.generatedAt ?? null,
         stale: isOverviewStale(storyline, context.greetings),
@@ -1049,27 +1087,46 @@ export class WaypointEngine {
       if (this.missingPermissions(CONTEXT_PERMISSIONS).length) return messages;
       // Awaited so a failed read falls back to the untouched prompt below
       // instead of rejecting the whole generation.
-      return await this.serial(chatId, async () => {
+      const entries = await this.serial(chatId, async () => {
         const context = await this.context(chatId);
         const state = reconcileChatState(await this.state(chatId), context);
         await this.reconcileJournalLocked(chatId, state, context, settings);
         const scene = this.promptStatus(context, state, settings);
         const story = this.storylinePrompt(context, state, settings);
-        const entries: Array<{ value: LlmMessageDTO; depth: number; name: string }> = [];
+        const planned: Array<{ value: LlmMessageDTO; depth: number; name: string; characterId?: string }> = [];
         // The overview comes first when both share a depth: journey, then next scene.
         if (story.ready && story.content) {
-          entries.push({ value: { role: settings.promptRole, content: story.content }, depth: settings.storylineInsertionDepth, name: "Waypoints: storyline overview" });
+          planned.push({
+            value: { role: settings.promptRole, content: story.content },
+            depth: settings.storylineInsertionDepth,
+            name: "Waypoints: storyline overview",
+            characterId: story.characterId ?? undefined,
+          });
         }
         if (scene.ready && scene.content) {
-          entries.push({ value: { role: settings.promptRole, content: scene.content }, depth: settings.insertionDepth, name: "Waypoints: upcoming scene" });
+          planned.push({
+            value: { role: settings.promptRole, content: scene.content },
+            depth: settings.insertionDepth,
+            name: "Waypoints: upcoming scene",
+            characterId: state.upcoming?.characterId,
+          });
         }
-        if (!entries.length) return messages;
-        const result = insertAtDepths(messages, entries);
-        return {
-          messages: result,
-          breakdown: entries.map((entry) => ({ messageIndex: result.indexOf(entry.value), name: entry.name })),
-        };
+        return planned;
       });
+      if (!entries.length) return messages;
+      // Injected text skips the host's prompt assembly, so expand {{user}},
+      // {{char}}, and friends here. This runs outside the chat queue because
+      // resolving can call back into Waypoints' own macros.
+      for (const entry of entries) {
+        if (typeof entry.value.content === "string") {
+          entry.value.content = await this.resolveMacros(entry.value.content, chatId, entry.characterId);
+        }
+      }
+      const result = insertAtDepths(messages, entries);
+      return {
+        messages: result,
+        breakdown: entries.map((entry) => ({ messageIndex: result.indexOf(entry.value), name: entry.name })),
+      };
     } catch (error) {
       this.warn("prompt interceptor skipped: " + (error instanceof Error ? error.message : String(error)));
       return messages;

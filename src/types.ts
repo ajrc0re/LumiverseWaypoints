@@ -80,6 +80,10 @@ export interface CharacterStoryline {
   route: StorylineRouteEntry[];
   /** Author guidance passed to the overview generator. */
   notes: string;
+  /** Give the generator the chat's user persona. */
+  includePersona: boolean;
+  /** Give the generator the character's description, personality, and scenario. */
+  includeCharacter: boolean;
   /** Narrative overview ("meta prompt") describing the whole journey. */
   overview: string;
   /** Route signature when the overview was generated; empty for a hand-written overview. */
@@ -227,6 +231,8 @@ export interface StorylineCharacterView {
   /** Route used for the overview and journey position: the custom route or card order. */
   effectiveRoute: number[];
   notes: string;
+  includePersona: boolean;
+  includeCharacter: boolean;
   overview: string;
   generatedAt: number | null;
   /** The overview was generated for a different route or different greeting text. */

@@ -46,9 +46,9 @@ var DEFAULT_STORYLINE_TEMPLATE = [
 ].join(`
 `);
 var DEFAULT_STORYLINE_GENERATOR_TEMPLATE = [
-  "You are a narrative designer preparing private guidance for a storyteller AI that runs a long-form interactive roleplay with {{character_name}}.",
+  "You are a narrative designer preparing private guidance for a storyteller AI that runs a long-form interactive roleplay between {{character_name}} and {{user_name}}.",
   "",
-  "The roleplay will pass through the {{waypoint_count}} prewritten scenes below, in this order. Each prewritten scene is inserted verbatim when the story reaches it. Between prewritten scenes, the storyteller improvises with the user and must steer the story so the next prewritten scene can begin naturally.",
+  "The roleplay will pass through the {{waypoint_count}} prewritten scenes below, in this order. Each prewritten scene is inserted verbatim when the story reaches it. Between prewritten scenes, the storyteller improvises with {{user_name}} and must steer the story so the next prewritten scene can begin naturally.",
   "",
   "Write a narrative overview of the entire journey that gives the storyteller the long-range context a single upcoming scene cannot:",
   "1. Premise and arc: the central situation, the relationships, the themes and tone, and how the story escalates or transforms from the first prewritten scene to the last.",
@@ -56,12 +56,9 @@ var DEFAULT_STORYLINE_GENERATOR_TEMPLATE = [
   "3. Continuity: facts that must stay consistent across the story, such as names, relationships, injuries, possessions, locations, time of day, and season.",
   "4. Threads to foreshadow early and pay off later.",
   "",
-  "Rules: summarize in your own words and never quote or reproduce the scenes' prose. Refer to them only as prewritten scenes or story beats. Write in present tense as instructions to the storyteller. Use short headings and plain text without markdown tables. Keep it under about 800 words. Output only the overview.",
+  `Rules: summarize in your own words and never quote or reproduce the scenes' prose. Refer to them only as prewritten scenes or story beats. Call everyone by name: write {{user_name}}, never "the user" or "you". Write in present tense as instructions to the storyteller. Use short headings and plain text without markdown tables. Keep it under about 800 words. Output only the overview.`,
   "",
-  "Character: {{character_name}}",
-  "Description: {{character_description}}",
-  "Personality: {{character_personality}}",
-  "Scenario: {{character_scenario}}",
+  "{{story_context}}",
   "",
   "Author guidance: {{author_notes}}",
   "",
@@ -98,6 +95,30 @@ var LEGACY_STORYLINE_TEMPLATES = new Set([
 `)
 ]);
 var LEGACY_STORYLINE_GENERATOR_TEMPLATES = new Set([[
+  "You are a narrative designer preparing private guidance for a storyteller AI that runs a long-form interactive roleplay with {{character_name}}.",
+  "",
+  "The roleplay will pass through the {{waypoint_count}} prewritten scenes below, in this order. Each prewritten scene is inserted verbatim when the story reaches it. Between prewritten scenes, the storyteller improvises with the user and must steer the story so the next prewritten scene can begin naturally.",
+  "",
+  "Write a narrative overview of the entire journey that gives the storyteller the long-range context a single upcoming scene cannot:",
+  "1. Premise and arc: the central situation, the relationships, the themes and tone, and how the story escalates or transforms from the first prewritten scene to the last.",
+  "2. Scene by scene, as a numbered list matching the prewritten scene numbers: where and when it takes place, who is present, the emotional state, and what has to happen between the previous prewritten scene and this one for it to begin naturally (the bridge).",
+  "3. Continuity: facts that must stay consistent across the story, such as names, relationships, injuries, possessions, locations, time of day, and season.",
+  "4. Threads to foreshadow early and pay off later.",
+  "",
+  "Rules: summarize in your own words and never quote or reproduce the scenes' prose. Refer to them only as prewritten scenes or story beats. Write in present tense as instructions to the storyteller. Use short headings and plain text without markdown tables. Keep it under about 800 words. Output only the overview.",
+  "",
+  "Character: {{character_name}}",
+  "Description: {{character_description}}",
+  "Personality: {{character_personality}}",
+  "Scenario: {{character_scenario}}",
+  "",
+  "Author guidance: {{author_notes}}",
+  "",
+  "Prewritten scenes in story order:",
+  "",
+  "{{waypoints}}"
+].join(`
+`), [
   "You are a narrative designer preparing private guidance for a storyteller AI that runs a long-form interactive roleplay with {{character_name}}.",
   "",
   "The roleplay will pass through the {{waypoint_count}} prewritten scenes below, in this order. Each scene is a waypoint that will be inserted verbatim when the story reaches it. Between waypoints, the storyteller improvises with the user and must steer the story so each next waypoint can begin naturally.",
@@ -496,6 +517,8 @@ function emptyStoryline(characterId) {
     characterId,
     route: [],
     notes: "",
+    includePersona: true,
+    includeCharacter: true,
     overview: "",
     overviewSignature: "",
     generatedAt: null,
@@ -527,6 +550,8 @@ function parseStoryline(value, characterId) {
     characterId,
     route: routeEntriesFrom(value.route),
     notes: text(value.notes, STORYLINE_NOTES_LIMIT),
+    includePersona: value.includePersona !== false,
+    includeCharacter: value.includeCharacter !== false,
     overview: text(value.overview, STORYLINE_OVERVIEW_LIMIT),
     overviewSignature: typeof value.overviewSignature === "string" ? value.overviewSignature : "",
     generatedAt: Number.isFinite(value.generatedAt) ? Number(value.generatedAt) : null,
@@ -647,6 +672,11 @@ function renderStorylinePrompt(settings, overview, position, characterName) {
 
 `).trim();
 }
+var USER_NAME_MACRO = "{{user}}";
+var USER_PERSONA_MACRO = "{{persona}}";
+function finishResolvedGeneratorPrompt(text) {
+  return text.split(USER_PERSONA_MACRO).join("(none)").split(USER_NAME_MACRO).join("the user");
+}
 function clip(value, limit) {
   return value.length > limit ? value.slice(0, limit).trimEnd() + `
 [\u2026truncated]` : value;
@@ -661,11 +691,32 @@ function renderGeneratorPrompt(settings, input) {
 
 `);
   const notes = input.notes.trim();
+  const field = (value) => (value ?? "").trim();
+  const name = input.character.name || "the character";
+  const omitted = "(not included)";
+  const context = ["Character: " + name];
+  if (input.includeCharacter) {
+    for (const [label, value] of [
+      ["Description", input.character.description],
+      ["Personality", input.character.personality],
+      ["Scenario", input.character.scenario]
+    ]) {
+      if (field(value))
+        context.push(label + ": " + field(value));
+    }
+  }
+  context.push("", "User's character: " + USER_NAME_MACRO);
+  if (input.includePersona)
+    context.push("User's persona: " + USER_PERSONA_MACRO);
   return substitute2(settings.storylineGeneratorTemplate, {
-    character_name: input.character.name || "the character",
-    character_description: (input.character.description ?? "").trim() || "(none)",
-    character_personality: (input.character.personality ?? "").trim() || "(none)",
-    character_scenario: (input.character.scenario ?? "").trim() || "(none)",
+    character_name: name,
+    character_description: input.includeCharacter ? field(input.character.description) || "(none)" : omitted,
+    character_personality: input.includeCharacter ? field(input.character.personality) || "(none)" : omitted,
+    character_scenario: input.includeCharacter ? field(input.character.scenario) || "(none)" : omitted,
+    user_name: USER_NAME_MACRO,
+    user_persona: input.includePersona ? USER_PERSONA_MACRO : omitted,
+    story_context: context.join(`
+`),
     author_notes: notes || "(none)",
     waypoint_count: String(total),
     waypoints
@@ -1577,6 +1628,8 @@ class WaypointEngine {
       ...previous,
       route: routeEntries(indices, context.greetings, characterId),
       notes,
+      includePersona: typeof input.includePersona === "boolean" ? input.includePersona : previous.includePersona,
+      includeCharacter: typeof input.includeCharacter === "boolean" ? input.includeCharacter : previous.includeCharacter,
       updatedAt: Date.now()
     };
     if (overview !== undefined) {
@@ -1628,7 +1681,10 @@ class WaypointEngine {
     });
     if (!greetings.length)
       throw new Error("This character has no greetings to build a storyline from.");
-    const prompt = renderGeneratorPrompt(settings, { character, route: greetings, notes });
+    const saved = await this.storyline(characterId) ?? emptyStoryline(characterId);
+    const includePersona = typeof input.includePersona === "boolean" ? input.includePersona : saved.includePersona;
+    const includeCharacter = typeof input.includeCharacter === "boolean" ? input.includeCharacter : saved.includeCharacter;
+    const prompt = finishResolvedGeneratorPrompt(await this.resolveMacros(renderGeneratorPrompt(settings, { character, route: greetings, notes, includePersona, includeCharacter }), chatId, characterId));
     const controller = new AbortController;
     this.generations.set(characterId, controller);
     this.note("narrative overview generation started for " + characterId);
@@ -1661,6 +1717,8 @@ class WaypointEngine {
       ...previous,
       route: routeEntries(indices, context.greetings, characterId),
       notes,
+      includePersona,
+      includeCharacter,
       overview,
       overviewSignature: routeSignature(route, context.greetings, characterId),
       generatedAt: now,
@@ -1669,6 +1727,22 @@ class WaypointEngine {
     this.note("narrative overview generated for " + characterId + " (" + String(overview.length) + " characters)");
     if (!sameRoute(previousRoute, indices))
       await this.replanChat(chatId, characterId);
+  }
+  async resolveMacros(text, chatId, characterId) {
+    if (!text.includes("{{"))
+      return text;
+    try {
+      const result = await this.api.macros.resolve(text, {
+        chatId,
+        ...characterId ? { characterId } : {},
+        ...this.userId ? { userId: this.userId } : {},
+        commit: false
+      });
+      return typeof result?.text === "string" ? result.text : text;
+    } catch (error) {
+      this.warn("macro expansion skipped: " + (error instanceof Error ? error.message : String(error)));
+      return text;
+    }
   }
   async listConnections() {
     if (!this.api.permissions.has("generation"))
@@ -1714,6 +1788,8 @@ class WaypointEngine {
         route: resolveRoute(storyline, context.greetings),
         effectiveRoute: effectiveRoute(storyline, context.greetings, characterId),
         notes: storyline?.notes ?? "",
+        includePersona: storyline?.includePersona ?? true,
+        includeCharacter: storyline?.includeCharacter ?? true,
         overview: storyline?.overview ?? "",
         generatedAt: storyline?.generatedAt ?? null,
         stale: isOverviewStale(storyline, context.greetings),
@@ -1735,27 +1811,43 @@ class WaypointEngine {
         return messages;
       if (this.missingPermissions(CONTEXT_PERMISSIONS).length)
         return messages;
-      return await this.serial(chatId, async () => {
+      const entries = await this.serial(chatId, async () => {
         const context = await this.context(chatId);
         const state = reconcileChatState(await this.state(chatId), context);
         await this.reconcileJournalLocked(chatId, state, context, settings);
         const scene = this.promptStatus(context, state, settings);
         const story = this.storylinePrompt(context, state, settings);
-        const entries = [];
+        const planned = [];
         if (story.ready && story.content) {
-          entries.push({ value: { role: settings.promptRole, content: story.content }, depth: settings.storylineInsertionDepth, name: "Waypoints: storyline overview" });
+          planned.push({
+            value: { role: settings.promptRole, content: story.content },
+            depth: settings.storylineInsertionDepth,
+            name: "Waypoints: storyline overview",
+            characterId: story.characterId ?? undefined
+          });
         }
         if (scene.ready && scene.content) {
-          entries.push({ value: { role: settings.promptRole, content: scene.content }, depth: settings.insertionDepth, name: "Waypoints: upcoming scene" });
+          planned.push({
+            value: { role: settings.promptRole, content: scene.content },
+            depth: settings.insertionDepth,
+            name: "Waypoints: upcoming scene",
+            characterId: state.upcoming?.characterId
+          });
         }
-        if (!entries.length)
-          return messages;
-        const result = insertAtDepths(messages, entries);
-        return {
-          messages: result,
-          breakdown: entries.map((entry) => ({ messageIndex: result.indexOf(entry.value), name: entry.name }))
-        };
+        return planned;
       });
+      if (!entries.length)
+        return messages;
+      for (const entry of entries) {
+        if (typeof entry.value.content === "string") {
+          entry.value.content = await this.resolveMacros(entry.value.content, chatId, entry.characterId);
+        }
+      }
+      const result = insertAtDepths(messages, entries);
+      return {
+        messages: result,
+        breakdown: entries.map((entry) => ({ messageIndex: result.indexOf(entry.value), name: entry.name }))
+      };
     } catch (error) {
       this.warn("prompt interceptor skipped: " + (error instanceof Error ? error.message : String(error)));
       return messages;
@@ -2068,6 +2160,8 @@ function parseStorylineDraft(value) {
   return {
     route: Array.isArray(source.route) ? source.route : [],
     notes: typeof source.notes === "string" ? source.notes : "",
+    includePersona: typeof source.includePersona === "boolean" ? source.includePersona : undefined,
+    includeCharacter: typeof source.includeCharacter === "boolean" ? source.includeCharacter : undefined,
     overview: typeof source.overview === "string" ? source.overview : undefined
   };
 }
@@ -2173,7 +2267,7 @@ async function handleRequest(raw, userId) {
         const draft = parseStorylineDraft(input.storyline);
         notifyChanged(userId, "storyline");
         try {
-          await current.generateStoryline(selectedChatId, characterId, { route: draft.route, notes: draft.notes });
+          await current.generateStoryline(selectedChatId, characterId, { route: draft.route, notes: draft.notes, includePersona: draft.includePersona, includeCharacter: draft.includeCharacter });
         } finally {
           notifyChanged(userId, "storyline");
         }

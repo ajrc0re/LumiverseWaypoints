@@ -37,9 +37,9 @@ var DEFAULT_STORYLINE_TEMPLATE = [
 ].join(`
 `);
 var DEFAULT_STORYLINE_GENERATOR_TEMPLATE = [
-  "You are a narrative designer preparing private guidance for a storyteller AI that runs a long-form interactive roleplay with {{character_name}}.",
+  "You are a narrative designer preparing private guidance for a storyteller AI that runs a long-form interactive roleplay between {{character_name}} and {{user_name}}.",
   "",
-  "The roleplay will pass through the {{waypoint_count}} prewritten scenes below, in this order. Each prewritten scene is inserted verbatim when the story reaches it. Between prewritten scenes, the storyteller improvises with the user and must steer the story so the next prewritten scene can begin naturally.",
+  "The roleplay will pass through the {{waypoint_count}} prewritten scenes below, in this order. Each prewritten scene is inserted verbatim when the story reaches it. Between prewritten scenes, the storyteller improvises with {{user_name}} and must steer the story so the next prewritten scene can begin naturally.",
   "",
   "Write a narrative overview of the entire journey that gives the storyteller the long-range context a single upcoming scene cannot:",
   "1. Premise and arc: the central situation, the relationships, the themes and tone, and how the story escalates or transforms from the first prewritten scene to the last.",
@@ -47,12 +47,9 @@ var DEFAULT_STORYLINE_GENERATOR_TEMPLATE = [
   "3. Continuity: facts that must stay consistent across the story, such as names, relationships, injuries, possessions, locations, time of day, and season.",
   "4. Threads to foreshadow early and pay off later.",
   "",
-  "Rules: summarize in your own words and never quote or reproduce the scenes' prose. Refer to them only as prewritten scenes or story beats. Write in present tense as instructions to the storyteller. Use short headings and plain text without markdown tables. Keep it under about 800 words. Output only the overview.",
+  `Rules: summarize in your own words and never quote or reproduce the scenes' prose. Refer to them only as prewritten scenes or story beats. Call everyone by name: write {{user_name}}, never "the user" or "you". Write in present tense as instructions to the storyteller. Use short headings and plain text without markdown tables. Keep it under about 800 words. Output only the overview.`,
   "",
-  "Character: {{character_name}}",
-  "Description: {{character_description}}",
-  "Personality: {{character_personality}}",
-  "Scenario: {{character_scenario}}",
+  "{{story_context}}",
   "",
   "Author guidance: {{author_notes}}",
   "",
@@ -89,6 +86,30 @@ var LEGACY_STORYLINE_TEMPLATES = new Set([
 `)
 ]);
 var LEGACY_STORYLINE_GENERATOR_TEMPLATES = new Set([[
+  "You are a narrative designer preparing private guidance for a storyteller AI that runs a long-form interactive roleplay with {{character_name}}.",
+  "",
+  "The roleplay will pass through the {{waypoint_count}} prewritten scenes below, in this order. Each prewritten scene is inserted verbatim when the story reaches it. Between prewritten scenes, the storyteller improvises with the user and must steer the story so the next prewritten scene can begin naturally.",
+  "",
+  "Write a narrative overview of the entire journey that gives the storyteller the long-range context a single upcoming scene cannot:",
+  "1. Premise and arc: the central situation, the relationships, the themes and tone, and how the story escalates or transforms from the first prewritten scene to the last.",
+  "2. Scene by scene, as a numbered list matching the prewritten scene numbers: where and when it takes place, who is present, the emotional state, and what has to happen between the previous prewritten scene and this one for it to begin naturally (the bridge).",
+  "3. Continuity: facts that must stay consistent across the story, such as names, relationships, injuries, possessions, locations, time of day, and season.",
+  "4. Threads to foreshadow early and pay off later.",
+  "",
+  "Rules: summarize in your own words and never quote or reproduce the scenes' prose. Refer to them only as prewritten scenes or story beats. Write in present tense as instructions to the storyteller. Use short headings and plain text without markdown tables. Keep it under about 800 words. Output only the overview.",
+  "",
+  "Character: {{character_name}}",
+  "Description: {{character_description}}",
+  "Personality: {{character_personality}}",
+  "Scenario: {{character_scenario}}",
+  "",
+  "Author guidance: {{author_notes}}",
+  "",
+  "Prewritten scenes in story order:",
+  "",
+  "{{waypoints}}"
+].join(`
+`), [
   "You are a narrative designer preparing private guidance for a storyteller AI that runs a long-form interactive roleplay with {{character_name}}.",
   "",
   "The roleplay will pass through the {{waypoint_count}} prewritten scenes below, in this order. Each scene is a waypoint that will be inserted verbatim when the story reaches it. Between waypoints, the storyteller improvises with the user and must steer the story so each next waypoint can begin naturally.",
@@ -486,8 +507,8 @@ function greetingPickerOptions(kind, view) {
 function shouldRefreshDrawer(eventName) {
   return eventName === "CHAT_SWITCHED" || eventName === "CHAT_CHANGED" || eventName === "waypoints:changed";
 }
-function savedKey(route, notes, overview) {
-  return JSON.stringify([route, notes, overview]);
+function savedKey(route, fields) {
+  return JSON.stringify([route, fields.notes, fields.includePersona, fields.includeCharacter, fields.overview]);
 }
 function storylineDraftFromSaved(saved, greetings) {
   const own = cardOrder(greetings, saved.characterId);
@@ -497,8 +518,10 @@ function storylineDraftFromSaved(saved, greetings) {
     order: [...route, ...own.filter((index) => !route.includes(index))],
     excluded: own.filter((index) => !route.includes(index)),
     notes: saved.notes,
+    includePersona: saved.includePersona,
+    includeCharacter: saved.includeCharacter,
     overview: saved.overview,
-    base: savedKey(saved.route, saved.notes, saved.overview)
+    base: savedKey(saved.route, saved)
   };
 }
 function storylineDraftRoute(draft, greetings) {
@@ -509,10 +532,10 @@ function storylineDraftStops(draft) {
   return draft.order.filter((index) => !draft.excluded.includes(index));
 }
 function draftKey(draft, greetings) {
-  return savedKey(storylineDraftRoute(draft, greetings), draft.notes, draft.overview);
+  return savedKey(storylineDraftRoute(draft, greetings), draft);
 }
 function storylineDraftDirty(draft, saved, greetings) {
-  return draftKey(draft, greetings) !== savedKey(saved.route, saved.notes, saved.overview);
+  return draftKey(draft, greetings) !== savedKey(saved.route, saved);
 }
 function reconcileStorylineDraft(draft, saved, greetings) {
   if (!draft || draftKey(draft, greetings) === draft.base)
@@ -1532,7 +1555,13 @@ function setup(ctx) {
     await rpc("save-storyline", {
       chatId: requireCurrentChatId(),
       characterId: saved.characterId,
-      storyline: { route, notes: draft.notes, overview: draft.overview }
+      storyline: {
+        route,
+        notes: draft.notes,
+        includePersona: draft.includePersona,
+        includeCharacter: draft.includeCharacter,
+        overview: draft.overview
+      }
     });
     storyDrafts.delete(saved.characterId);
     await load();
@@ -1571,7 +1600,12 @@ function setup(ctx) {
       await rpc("generate-storyline", {
         chatId,
         characterId,
-        storyline: { route: storylineDraftRoute(draft, view.greetings), notes: draft.notes }
+        storyline: {
+          route: storylineDraftRoute(draft, view.greetings),
+          notes: draft.notes,
+          includePersona: draft.includePersona,
+          includeCharacter: draft.includeCharacter
+        }
       }, GENERATION_TIMEOUT_MS);
       if (!isCurrentSelection(version))
         return;
@@ -1739,6 +1773,24 @@ function setup(ctx) {
         updateDirty();
       }
     }));
+    const contextOptions = [
+      ["includeCharacter", "Include character description, personality, and scenario", "Gives the generator the character card's details."],
+      ["includePersona", "Include the current user persona", "Gives the generator your persona's description. Your name is always used either way."]
+    ];
+    for (const [key, label, hint] of contextOptions) {
+      const target = element("div", "wp-native");
+      section.append(target);
+      componentHandles.push(ctx.components.mountCheckbox(target, {
+        checked: draft[key],
+        label,
+        hint,
+        disabled: generating,
+        onChange: (checked) => {
+          draft[key] = checked;
+          updateDirty();
+        }
+      }));
+    }
     const generateRow = element("div", "wp-actions");
     if (generating) {
       generateRow.append(element("span", "wp-generating", "Generating the narrative overview…"));
@@ -1951,7 +2003,7 @@ function setup(ctx) {
         updateDraftValidation(validation);
       }
     }));
-    addField(settings, "Overview generator instructions", "Sent to the model by Generate overview. Required: {{waypoints}}. Optional: {{character_name}}, {{character_description}}, {{character_personality}}, {{character_scenario}}, {{author_notes}}, and {{waypoint_count}}.", (target) => ctx.components.mountTextArea(target, {
+    addField(settings, "Overview generator instructions", "Sent to the model by Generate overview. Required: {{waypoints}}. Optional: {{story_context}} (character and persona details chosen in the Storyline tab), {{character_name}}, {{user_name}}, {{character_description}}, {{character_personality}}, {{character_scenario}}, {{user_persona}}, {{author_notes}}, and {{waypoint_count}}. Lumiverse macros such as {{user}} and {{char}} are expanded before sending.", (target) => ctx.components.mountTextArea(target, {
       value: draft.storylineGeneratorTemplate,
       rows: 12,
       ariaLabel: "Overview generator instructions",
