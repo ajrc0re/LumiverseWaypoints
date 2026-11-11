@@ -8,6 +8,17 @@ export const WAYPOINTS_ALT_MESSAGES_MACRO = "altMessages";
 export const WAYPOINTS_NEXT_MESSAGES_MACRO = "nextMessages";
 export const WAYPOINTS_CURRENT_MESSAGE_MACRO = "currentMessage";
 export const WAYPOINTS_NEXT_MESSAGE_MACRO = "nextMessage";
+export const WAYPOINTS_STORYLINE_ACTIVE_MACRO = "waypoints_storyline_active";
+export const WAYPOINTS_STORYLINE_MACRO = "waypoints_storyline";
+
+/** Raw overview and journey-position values for writing your own Loom storyline prompt. */
+export const WAYPOINTS_STORYLINE_VALUE_MACROS: ReadonlyArray<[string, string, (values: WaypointLoomValues) => string]> = [
+  ["waypoints_storyline_overview", "Returns the raw narrative overview text, without the overview template, when it is active for this chat.", (values) => values.storylineOverview],
+  ["waypoints_storyline_position", "Returns a sentence describing which prewritten scene the story is in and which comes next.", (values) => values.storylinePosition],
+  ["waypoints_current_waypoint", "Returns the current prewritten scene's number on the storyline, or nothing when the story is between planned scenes.", (values) => values.currentWaypoint],
+  ["waypoints_next_waypoint", "Returns the next prewritten scene's number on the storyline, or nothing when it is not a planned scene.", (values) => values.nextWaypoint],
+  ["waypoints_waypoint_count", "Returns the number of prewritten scenes on the storyline.", (values) => values.waypointCount],
+];
 
 export interface WaypointMacroIdentity {
   chatId?: string;
@@ -128,6 +139,27 @@ export function registerWaypointsLoomMacros(
     resolver,
     (values) => values.nextMessage,
   );
+
+  register(
+    api,
+    WAYPOINTS_STORYLINE_ACTIVE_MACRO,
+    "Returns true when this chat's narrative overview is enabled and has content.",
+    "boolean",
+    resolver,
+    (values) => values.storylineActive ? "true" : "false",
+  );
+  register(
+    api,
+    WAYPOINTS_STORYLINE_MACRO,
+    "Returns the rendered Waypoints narrative overview (storyline) prompt for this chat.",
+    "string",
+    resolver,
+    (values) => values.storylineActive ? values.storyline : "",
+  );
+
+  for (const [name, description, select] of WAYPOINTS_STORYLINE_VALUE_MACROS) {
+    register(api, name, description, "string", resolver, select);
+  }
 
   let registeredAlternateGreetingCount = 0;
   return (alternateGreetingCount) => {
