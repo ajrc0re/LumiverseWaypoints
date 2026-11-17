@@ -225,6 +225,9 @@ async function handleRequest(raw: unknown, userId?: string): Promise<void> {
       case "cancel-storyline":
         result = { cancelled: current.cancelStorylineGeneration(requireCharacterId(input)) };
         break;
+      case "set-storyline-generator":
+        result = await current.setStorylineGenerator({ connectionId: input.connectionId, model: input.model });
+        break;
       case "list-connections":
         result = await current.listConnections();
         break;

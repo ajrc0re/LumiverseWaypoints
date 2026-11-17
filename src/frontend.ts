@@ -3,6 +3,7 @@ import type {
   SpindleFrontendContext,
   SpindleInputBarActionHandle,
   SpindleModalHandle,
+  SpindleModelComboboxHandle,
 } from "lumiverse-spindle-types";
 import { DEFAULT_SETTINGS } from "./config";
 import {
@@ -101,6 +102,14 @@ function asConnections(value: unknown): ConnectionOption[] {
     : []);
 }
 
+interface GeneratorChoice {
+  connectionId: string;
+  model: string;
+}
+
+/** Typing in the model field saves once the user pauses, not on every keystroke. */
+const GENERATOR_SAVE_DELAY_MS = 600;
+
 /** Overview generation runs a full model call, so it gets far longer than ordinary requests. */
 const GENERATION_TIMEOUT_MS = 10 * 60_000;
 
@@ -176,6 +185,10 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let generatingCharacterId: string | null = null;
   let connections: ConnectionOption[] | undefined;
   let connectionsLoading = false;
+  /** Generator choice typed or picked in the Storyline tab and not yet confirmed saved. */
+  let generatorPending: GeneratorChoice | null = null;
+  let generatorSaveTimer: ReturnType<typeof setTimeout> | undefined;
+  let generatorSaving: Promise<boolean> = Promise.resolve(true);
   const pending = new Map<string, {
     resolve: (value: unknown) => void;
     reject: (reason: Error) => void;
@@ -398,12 +411,17 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   function addField(
     parent: HTMLElement,
     label: string,
-    help: string,
+    help: string | HTMLElement,
     mount: (target: HTMLElement) => ComponentHandle,
   ): void {
     const wrap = element("div", "wp-field");
     wrap.append(element("label", "wp-label", label));
-    if (help) wrap.append(element("p", "wp-help", help));
+    if (typeof help !== "string") {
+      help.classList.add("wp-help");
+      wrap.append(help);
+    } else if (help) {
+      wrap.append(element("p", "wp-help", help));
+    }
     const target = element("div", "wp-native");
     wrap.append(target);
     parent.append(wrap);
@@ -1105,6 +1123,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     }
     const version = selectionVersion;
     const characterId = saved.characterId;
+    // Generate with the connection and model the user sees, even mid-typing.
+    if (!await flushGeneratorSave()) return;
+    if (!isCurrentSelection(version) || busy || isStoryGenerating(saved)) return;
     generatingCharacterId = characterId;
     setNotice("");
     render();
@@ -1305,6 +1326,8 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       }));
     }
 
+    renderStoryGenerator(section, generating);
+
     const generateRow = element("div", "wp-actions");
     if (generating) {
       generateRow.append(element("span", "wp-generating", "Generating the narrative overview…"));
@@ -1413,6 +1436,114 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     renderStoryOverview(parent, saved, draft, generating);
   }
 
+  function generatorChoice(): GeneratorChoice {
+    return generatorPending ?? {
+      connectionId: view?.settings.storylineConnectionId ?? "",
+      model: view?.settings.storylineModel ?? "",
+    };
+  }
+
+  function queueGeneratorSave(next: GeneratorChoice, delay: number): void {
+    generatorPending = next;
+    clearTimeout(generatorSaveTimer);
+    generatorSaveTimer = setTimeout(() => void flushGeneratorSave(), delay);
+  }
+
+  /** Saves any pending generator choice; resolves false when the save failed. */
+  function flushGeneratorSave(): Promise<boolean> {
+    clearTimeout(generatorSaveTimer);
+    generatorSaveTimer = undefined;
+    const next = generatorPending;
+    if (!next) return generatorSaving;
+    generatorSaving = generatorSaving.then(async () => {
+      try {
+        const result = safeRecord(await rpc("set-storyline-generator", { ...next }));
+        const saved = isRecord(result.settings) ? result.settings as unknown as WaypointSettings : null;
+        const connectionId = saved ? saved.storylineConnectionId : next.connectionId.trim();
+        const model = saved ? saved.storylineModel : next.model.trim();
+        if (view) view.settings = { ...view.settings, storylineConnectionId: connectionId, storylineModel: model };
+        // Keep the Settings draft in step so saving it later cannot undo this choice.
+        draft.storylineConnectionId = connectionId;
+        draft.storylineModel = model;
+        return true;
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error), true);
+        render();
+        return false;
+      } finally {
+        if (generatorPending === next) generatorPending = null;
+      }
+    });
+    return generatorSaving;
+  }
+
+  function renderStoryGenerator(parent: HTMLElement, generating: boolean): void {
+    if (!connections) void loadConnections();
+    const choice = generatorChoice();
+    const grid = element("div", "wp-grid");
+    parent.append(grid);
+    const connectionOptions = [{ value: "", label: "Default connection" }, ...(connections ?? []).map((connection) => ({
+      value: connection.id,
+      label: connection.name + (connection.model ? " — " + connection.model : "") + (connection.isDefault ? " (default)" : ""),
+    }))];
+    if (choice.connectionId && !connectionOptions.some((option) => option.value === choice.connectionId)) {
+      connectionOptions.push({ value: choice.connectionId, label: connections ? "Unavailable connection" : "Loading connections…" });
+    }
+    addField(grid, "Generator connection", "Any Lumiverse connection profile. Use a cheaper or stronger model for overviews than for chat.", (target) =>
+      ctx.components.mountSelect(target, {
+        value: choice.connectionId,
+        options: connectionOptions,
+        disabled: generating,
+        onChange: (value) => {
+          queueGeneratorSave({ ...generatorChoice(), connectionId: value }, 0);
+          syncModelField();
+        },
+      }),
+    );
+
+    // The connection the generator will really use: the chosen one, else the default.
+    const effectiveConnection = () => {
+      const current = generatorChoice();
+      return current.connectionId
+        ? connections?.find((entry) => entry.id === current.connectionId)
+        : connections?.find((entry) => entry.isDefault);
+    };
+    const connectionRef = () => {
+      const id = generatorChoice().connectionId || effectiveConnection()?.id;
+      return id ? { kind: "llm" as const, id } : { kind: "llm" as const };
+    };
+    const modelHint = element("p");
+    let combobox: SpindleModelComboboxHandle | undefined;
+    const syncModelField = () => {
+      const model = effectiveConnection()?.model;
+      modelHint.textContent = "Leave blank to use the connection's own model" + (model ? " (" + model + ")." : ".");
+      combobox?.update({ connection: connectionRef() });
+    };
+    const onModelChange = (value: string) => queueGeneratorSave({ ...generatorChoice(), model: value }, GENERATOR_SAVE_DELAY_MS);
+    addField(grid, "Model override", modelHint, (target) => {
+      // Older hosts lack the model picker; a plain text field still works there.
+      if (typeof ctx.components.mountModelCombobox !== "function") {
+        return ctx.components.mountTextInput(target, {
+          value: choice.model,
+          placeholder: "Use connection default",
+          disabled: generating,
+          ariaLabel: "Generator model override",
+          onChange: onModelChange,
+        });
+      }
+      combobox = ctx.components.mountModelCombobox(target, {
+        value: choice.model,
+        connection: connectionRef(),
+        placeholder: "Use connection default",
+        appearance: "standard",
+        disabled: generating,
+        onChange: onModelChange,
+      });
+      return combobox;
+    });
+    syncModelField();
+  }
+
   async function loadConnections(): Promise<void> {
     if (connections || connectionsLoading) return;
     connectionsLoading = true;
@@ -1423,7 +1554,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       connections = [];
     } finally {
       connectionsLoading = false;
-      if (isCurrentSelection(version) && page === "settings") render();
+      if (isCurrentSelection(version) && page === "storyline") render();
     }
   }
 
@@ -1603,24 +1734,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         },
       }),
     );
-    if (!connections) void loadConnections();
-    const connectionOptions = [{ value: "", label: "Default connection" }, ...(connections ?? []).map((connection) => ({
-      value: connection.id,
-      label: connection.name + (connection.model ? " — " + connection.model : "") + (connection.isDefault ? " (default)" : ""),
-    }))];
-    if (draft.storylineConnectionId && !connectionOptions.some((option) => option.value === draft.storylineConnectionId)) {
-      connectionOptions.push({ value: draft.storylineConnectionId, label: connections ? "Unavailable connection" : "Loading connections…" });
-    }
-    addField(storyGrid, "Generator connection", "Use a cheaper or stronger model for overviews than for chat.", (target) =>
-      ctx.components.mountSelect(target, {
-        value: draft.storylineConnectionId,
-        options: connectionOptions,
-        onChange: (value) => {
-          draft.storylineConnectionId = value;
-          updateDraftValidation(validation);
-        },
-      }),
-    );
+    settings.append(element("p", "wp-help", "The generator's connection and model are chosen in the Storyline tab, next to Generate overview."));
 
     settings.append(element("div", "wp-divider"));
     settings.append(element("h4", "", "Handoff"));
@@ -1902,6 +2016,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
   return () => {
     destroyed = true;
+    clearTimeout(generatorSaveTimer);
     clearComponents();
     for (const dispose of disposers) dispose();
     for (const request of pending.values()) {
