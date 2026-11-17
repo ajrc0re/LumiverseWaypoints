@@ -615,6 +615,8 @@ describe("WaypointEngine storylines", () => {
     await engine.generateStoryline("chat", "a", { route: [0, 2], notes: "Keep it tense" });
     expect(host.quietCalls).toHaveLength(1);
     expect(host.quietCalls[0].connection_id).toBe("fast");
+    // No override means the connection's own model, so no model parameter is sent.
+    expect(host.quietCalls[0].parameters).toBeUndefined();
     const sent = (host.quietCalls[0].messages as Array<{ content: string }>)[0].content;
     expect(sent).toContain("Author guidance: Keep it tense");
     // Macros are expanded for the chat before the prompt is sent.
@@ -699,6 +701,20 @@ describe("WaypointEngine storylines", () => {
     const engine = new WaypointEngine(host.api);
     const messages = [{ role: "user" as const, content: "hi" }];
     expect(await engine.intercept(messages, "missing-chat")).toBe(messages);
+  });
+
+  test("sends the generator model override and saves the generator choice on its own", async () => {
+    const host = new FakeLumiverse(3);
+    host.settings = { ...DEFAULT_SETTINGS, insertionDepth: 3 };
+    const engine = new WaypointEngine(host.api);
+    const result = await engine.setStorylineGenerator({ connectionId: " fast ", model: "  small-2 " });
+    expect(result.settings).toMatchObject({ storylineConnectionId: "fast", storylineModel: "small-2", insertionDepth: 3 });
+    await engine.generateStoryline("chat", "a", { route: [], notes: "" });
+    expect(host.quietCalls[0]).toMatchObject({ connection_id: "fast", parameters: { model: "small-2" } });
+
+    // Omitted fields keep their saved value; blank clears back to the connection default.
+    expect((await engine.setStorylineGenerator({ model: "" })).settings).toMatchObject({ storylineConnectionId: "fast", storylineModel: "" });
+    await expect(engine.setStorylineGenerator({ model: "m".repeat(300) })).rejects.toThrow();
   });
 
   test("lists connection profiles for the generator", async () => {
