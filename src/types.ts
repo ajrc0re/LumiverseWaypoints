@@ -50,6 +50,8 @@ export interface WaypointSettings {
   actionBarButton: boolean;
   /** Tint the action-bar button green or red to show the chat's Waypoints state. */
   actionBarStatusColor: boolean;
+  /** Offer a per-character Waypoints switch, which is stored on the character card. */
+  characterCardSwitch: boolean;
   extrasActions: boolean;
   /** Prompt that wraps a character's narrative overview when it is injected. */
   storylineTemplate: string;
@@ -131,6 +133,8 @@ export interface GreetingContext {
   greetings: Greeting[];
   /** Saved storylines for the chat's characters, keyed by character ID. */
   storylines?: Record<string, CharacterStoryline>;
+  /** Honor the per-character switch stored on solo characters' cards. Omitted means honor it. */
+  characterCardSwitch?: boolean;
 }
 
 export interface PendingHandoff {
@@ -233,6 +237,8 @@ export interface CharacterView {
   id: string;
   name: string;
   enabled: boolean;
+  /** The character card holds Waypoints data that "Clear" can remove. */
+  cardData: boolean;
 }
 
 export interface StorylinePosition {

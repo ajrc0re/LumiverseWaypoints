@@ -278,6 +278,7 @@ describe("WaypointEngine prompt and processor", () => {
 
   test("exposes read-only Loom values only while the selected Waypoints path is ready", async () => {
     const host = new FakeLumiverse();
+    host.settings = { ...DEFAULT_SETTINGS, characterCardSwitch: true };
     const engine = new WaypointEngine(host.api);
 
     const ready = await engine.loomValues("chat");
@@ -734,9 +735,44 @@ describe("WaypointEngine storylines", () => {
   test("keeps other Waypoints card data when the character switch changes", async () => {
     const host = new FakeLumiverse(3);
     host.characters.get("a")!.extensions = { lumiverse_waypoints: { enabled: true, other: 1 } };
+    host.settings = { ...DEFAULT_SETTINGS, characterCardSwitch: true };
     const engine = new WaypointEngine(host.api);
     await engine.setEnabled("chat", "a", false);
     expect(host.characters.get("a")!.extensions.lumiverse_waypoints).toEqual({ enabled: false, other: 1 });
+  });
+
+  test("never writes to a character card unless the per-character switch is on and the value changes", async () => {
+    const host = new FakeLumiverse(3);
+    const engine = new WaypointEngine(host.api);
+    const view = await engine.view("chat");
+    expect(view.characters).toEqual([{ id: "a", name: "Ada", enabled: true, cardData: false }]);
+    await expect(engine.setEnabled("chat", "a", false)).rejects.toThrow("The per-character switch is off.");
+    expect(host.characters.get("a")!.extensions).toEqual({});
+
+    // With the switch off, a switch saved on the card earlier is ignored.
+    host.characters.get("a")!.extensions = { lumiverse_waypoints: { enabled: false } };
+    const ignored = await engine.view("chat");
+    expect(ignored.characters[0]).toMatchObject({ enabled: true, cardData: true });
+    expect(ignored.status).toStartWith("Ready");
+
+    await engine.saveSettings({ ...DEFAULT_SETTINGS, characterCardSwitch: true });
+    expect((await engine.view("chat")).characters[0].enabled).toBe(false);
+    // Turning a card with no data on is a no-op, not a write.
+    host.characters.get("a")!.extensions = {};
+    await engine.setEnabled("chat", "a", true);
+    expect(host.characters.get("a")!.extensions).toEqual({});
+  });
+
+  test("clears everything Waypoints stored on a character card", async () => {
+    const host = new FakeLumiverse(3);
+    host.characters.get("a")!.extensions = { lumiverse_waypoints: { enabled: false, other: 1 }, someone_else: { keep: true } };
+    const engine = new WaypointEngine(host.api);
+    expect(await engine.clearCharacterData("chat", "a")).toBe(true);
+    expect(host.characters.get("a")!.extensions).toEqual({ lumiverse_waypoints: null, someone_else: { keep: true } });
+    expect((await engine.view("chat")).characters[0].cardData).toBe(false);
+    // A clean card is left alone.
+    expect(await engine.clearCharacterData("chat", "a")).toBe(false);
+    await expect(engine.clearCharacterData("chat", "zed")).rejects.toThrow("That character is not in this chat.");
   });
 
   test("the interceptor returns the original prompt when the chat cannot be read", async () => {
