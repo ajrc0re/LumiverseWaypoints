@@ -206,6 +206,50 @@ describe("WaypointEngine prompt and processor", () => {
     host.characters.get("a")!.alternate_greetings = ["Greeting 2"];
     expect((await engine.view("chat")).chatEnabled).toBe(true);
   });
+  test("a chat opened for the first time takes the new-chat starting state and keeps it", async () => {
+    const host = new FakeLumiverse();
+    host.settings = { ...DEFAULT_SETTINGS, newChatsEnabled: false };
+    const engine = new WaypointEngine(host.api);
+    // Reading for macros alone does not count as opening the chat.
+    expect((await engine.loomValues("chat")).active).toBe(false);
+    expect(host.variables.size).toBe(0);
+    const first = await engine.view("chat");
+    expect(first.chatEnabled).toBe(false);
+    expect(first.status).toBe("Waypoints is off for this chat.");
+    expect(host.state().chatEnabled).toBe(false);
+
+    // Changing the setting later does not touch a chat that was already opened.
+    await engine.saveSettings({ ...DEFAULT_SETTINGS, newChatsEnabled: true });
+    expect((await engine.view("chat")).chatEnabled).toBe(false);
+    await engine.setChatEnabled("chat", true);
+    await engine.saveSettings({ ...DEFAULT_SETTINGS, newChatsEnabled: false });
+    expect((await engine.view("chat")).chatEnabled).toBe(true);
+  });
+
+  test("hides the reminder per chat and clears every hidden chat when the option is turned off", async () => {
+    const host = new FakeLumiverse();
+    const engine = new WaypointEngine(host.api);
+    expect((await engine.view("chat")).reminderHidden).toBe(false);
+    await engine.setReminderHidden("chat", true);
+    await engine.setReminderHidden("other", true);
+    expect((await engine.view("chat")).reminderHidden).toBe(true);
+    expect(host.files.get("reminder-hidden.json")).toEqual({ version: 1, chatIds: ["chat", "other"] });
+
+    // Saving with the option still on keeps the hidden chats.
+    await engine.saveSettings({ ...DEFAULT_SETTINGS, reminderDurationSeconds: 3 });
+    expect((await engine.view("chat")).reminderHidden).toBe(true);
+    await engine.saveSettings({ ...DEFAULT_SETTINGS, reminderNeverAgain: false });
+    expect(host.files.get("reminder-hidden.json")).toEqual({ version: 1, chatIds: [] });
+    await engine.saveSettings(DEFAULT_SETTINGS);
+    expect((await engine.view("chat")).reminderHidden).toBe(false);
+
+    // A fresh engine reads the stored list.
+    await engine.setReminderHidden("chat", true);
+    expect((await new WaypointEngine(host.api).view("chat")).reminderHidden).toBe(true);
+    await engine.setReminderHidden("chat", false);
+    expect((await engine.view("chat")).reminderHidden).toBe(false);
+  });
+
   test("an explicit empty frontend selection never falls back to the backend's previous chat", async () => {
     const host = new FakeLumiverse();
     const engine = new WaypointEngine(host.api);

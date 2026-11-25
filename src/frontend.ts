@@ -12,11 +12,17 @@ import {
   draftValidation,
   approximatePromptTokenCount,
   formatPromptCount,
+  GENERAL_SETTING_KEYS,
+  PROMPT_SETTING_KEYS,
   greetingPickerOptions,
   moveStorylineStop,
   reconcileStorylineDraft,
+  reminderPhase,
+  reminderTimeline,
+  resetDraftFields,
   resetStorylineOrder,
   shouldRefreshDrawer,
+  shouldShowReminder,
   storylineDraftDirty,
   storylineDraftFromSaved,
   storylineDraftRoute,
@@ -24,6 +30,7 @@ import {
   toggleStorylineStop,
   type DrawerPage,
   type GreetingPickerKind,
+  type ReminderTimeline,
   type StorylineDraft,
 } from "./frontend-model";
 import { handoffTag, overrideTag } from "./prompt";
@@ -167,15 +174,22 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let reminder: {
     chatId: string;
     version: number;
-    widget: SpindleFloatWidgetHandle;
-    durationMs: number;
-    deadline: number;
+    /** Waypoints state the reminder announces. */
+    enabled: boolean;
+    clickToggle: boolean;
+    neverAgain: boolean;
+    timeline: ReminderTimeline;
     interval: ReturnType<typeof setInterval>;
-    count: HTMLElement;
-    progress: HTMLElement;
+    toggling: boolean;
+    /** Created when the delay ends. */
+    widget?: SpindleFloatWidgetHandle;
+    card?: HTMLElement;
+    title?: HTMLElement;
+    hint?: HTMLElement;
+    progress?: HTMLElement;
+    neverBox?: HTMLInputElement;
   } | undefined;
   let pendingReminderChatId: string | null = null;
-  const createdChatIds = new Map<string, number>();
   let extrasActions: SpindleInputBarActionHandle[] = [];
   let pickerModal: SpindleModalHandle | undefined;
   let pickerOpen = false;
@@ -269,23 +283,138 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   function dismissReminder(): void {
     if (!reminder) return;
     clearInterval(reminder.interval);
-    reminder.widget.destroy();
+    reminder.widget?.destroy();
     reminder = undefined;
   }
 
-  function updateReminder(): void {
-    if (!reminder) return;
-    const remaining = Math.max(0, reminder.deadline - Date.now());
-    reminder.count.textContent = String(Math.ceil(remaining / 1000)) + "s";
-    reminder.progress.style.transform = "scaleX(" + String(remaining / reminder.durationMs) + ")";
-    if (remaining === 0) chooseReminder(reminder.chatId, reminder.version, view?.settings.reminderTimeoutAction !== "no");
+  function tickReminder(): void {
+    const current = reminder;
+    if (!current) return;
+    if (destroyed || current.version !== selectionVersion) {
+      dismissReminder();
+      return;
+    }
+    const phase = reminderPhase(current.timeline, Date.now());
+    if (phase.phase === "waiting") return;
+    if (!current.widget && !openReminderWidget(current)) {
+      dismissReminder();
+      return;
+    }
+    if (phase.phase === "gone") {
+      finishReminder(current);
+      return;
+    }
+    if (current.progress) current.progress.style.transform = "scaleX(" + String(phase.phase === "showing" ? phase.remaining : 0) + ")";
+    if (current.widget) current.widget.root.style.opacity = phase.phase === "fading" ? phase.opacity.toFixed(3) : "";
   }
 
-  function chooseReminder(chatId: string, version: number, enabled: boolean): void {
+  /** The reminder timed out: honor "Never remind me", then close it. */
+  function finishReminder(current: NonNullable<typeof reminder>): void {
+    const hide = current.neverAgain && current.neverBox?.checked === true;
+    const chatId = current.chatId;
     dismissReminder();
-    if (destroyed || version !== selectionVersion || ctx.getActiveChat().chatId !== chatId) return;
+    if (!hide || destroyed) return;
+    if (view?.chatId === chatId) view.reminderHidden = true;
+    void rpc("set-reminder-hidden", { chatId, hidden: true }).catch((error) => {
+      console.warn("[Waypoints] could not hide the reminder for this chat", error);
+    });
+  }
+
+  function paintReminder(current: NonNullable<typeof reminder>): void {
+    if (!current.card || !current.title || !current.hint) return;
+    const state = current.enabled ? "ENABLED" : "DISABLED";
+    current.card.classList.toggle("on", current.enabled);
+    current.card.classList.toggle("off", !current.enabled);
+    current.title.replaceChildren("Waypoints is ", element("strong", "wp-reminder-state", state), " for this chat!");
+    current.hint.textContent = "click here to " + (current.enabled ? "DISABLE" : "ENABLE");
+    current.hint.hidden = !current.clickToggle;
+    current.card.setAttribute("aria-label", "Waypoints is " + state + " for this chat" + (current.clickToggle ? ". Click to " + (current.enabled ? "disable" : "enable") + "." : "."));
+  }
+
+  function openReminderWidget(current: NonNullable<typeof reminder>): boolean {
+    const viewportWidth = document.defaultView?.innerWidth ?? 1280;
+    // A thin bar that may run wide; it still fits narrow screens, where the title truncates.
+    const width = Math.max(240, Math.min(current.neverAgain ? 540 : 340, viewportWidth - 24));
+    const height = current.clickToggle ? 52 : 38;
+    let widget: SpindleFloatWidgetHandle;
+    try {
+      // Lumiverse restores geometry only when a stable persistGeometry key is provided.
+      // Keep this separate from the always-visible controls widget; the key changed
+      // when the reminder became a thin bar so an old, taller size is not restored.
+      const options = {
+        width,
+        height,
+        initialPosition: { x: Math.max(12, viewportWidth - width - 16), y: 68 },
+        snapToEdge: true,
+        chromeless: true,
+        tooltip: "Waypoints chat reminder",
+        persistGeometry: "chat-reminder-bar",
+      };
+      widget = ctx.ui.createFloatWidget(options);
+    } catch (error) {
+      console.warn("[Waypoints] reminder widget unavailable", error);
+      return false;
+    }
+    const card = element("div", "wp-reminder-card");
+    card.setAttribute("role", current.clickToggle ? "button" : "status");
+    const text = element("div", "wp-reminder-text");
+    const title = element("div", "wp-reminder-title");
+    const hint = element("div", "wp-reminder-hint");
+    text.append(title, hint);
+    card.append(text);
+    if (current.neverAgain) {
+      const never = element("label", "wp-reminder-never");
+      const box = element("input");
+      box.type = "checkbox";
+      never.append(box, element("span", "", "Never remind me for this chat"));
+      // The checkbox must not count as a click on the reminder itself.
+      never.addEventListener("click", (event) => event.stopPropagation());
+      never.addEventListener("keydown", (event) => event.stopPropagation());
+      card.append(never);
+      current.neverBox = box;
+    }
+    const track = element("div", "wp-reminder-track");
+    const progress = element("div", "wp-reminder-progress");
+    track.append(progress);
+    card.append(track);
+    if (current.clickToggle) {
+      card.tabIndex = 0;
+      card.classList.add("clickable");
+      card.addEventListener("click", () => toggleFromReminder(current));
+      card.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        toggleFromReminder(current);
+      });
+    }
+    widget.root.className = "wp-reminder";
+    widget.root.replaceChildren(card);
+    Object.assign(current, { widget, card, title, hint, progress });
+    paintReminder(current);
+    return true;
+  }
+
+  function toggleFromReminder(current: NonNullable<typeof reminder>): void {
+    if (reminder !== current || current.toggling || busy) return;
+    if (destroyed || current.version !== selectionVersion || ctx.getActiveChat().chatId !== current.chatId) {
+      dismissReminder();
+      return;
+    }
+    const enabled = !current.enabled;
     void safely(async () => {
-      await rpc("set-chat-enabled", { chatId, enabled });
+      current.toggling = true;
+      try {
+        await rpc("set-chat-enabled", { chatId: current.chatId, enabled });
+        if (reminder === current) {
+          current.enabled = enabled;
+          // Show the new state for a full duration before it goes away.
+          current.timeline = reminderTimeline(view?.settings ?? DEFAULT_SETTINGS, Date.now(), false);
+          paintReminder(current);
+          tickReminder();
+        }
+      } finally {
+        current.toggling = false;
+      }
       await load();
     });
   }
@@ -294,50 +423,19 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     if (!view || !pendingReminderChatId || pendingReminderChatId !== view.chatId) return;
     const chatId = pendingReminderChatId;
     pendingReminderChatId = null;
-    // Only chats with Waypoints on may ask; a chat the user turned off (or answered No for)
-    // must never be asked again or re-enabled by the timeout answer. Chats without an
-    // alternate greeting arrive with chatEnabled false for the same reason.
-    if (!view.chatEnabled) return;
-    if (!view.settings.reminderToast || !view.grantedPermissions.includes("ui_panels")) return;
-    const createdAt = createdChatIds.get(chatId);
-    createdChatIds.delete(chatId);
-    const durationMs = createdAt !== undefined && Date.now() - createdAt < 60_000 ? 10_000 : 5_000;
-    let widget: SpindleFloatWidgetHandle;
-    try {
-      const viewportWidth = document.defaultView?.innerWidth ?? 1280;
-      // Lumiverse restores geometry only when a stable persistGeometry key is provided.
-      // Keep this separate from the always-visible controls widget.
-      const options = {
-        width: 316,
-        height: 112,
-        initialPosition: { x: Math.max(12, viewportWidth - 332), y: 68 },
-        snapToEdge: true,
-        chromeless: true,
-        tooltip: "Waypoints chat reminder",
-        persistGeometry: "chat-reminder",
-      };
-      widget = ctx.ui.createFloatWidget(options);
-    } catch (error) {
-      console.warn("[Waypoints] reminder widget unavailable", error);
-      return;
-    }
-    const version = selectionVersion;
-    const card = element("div", "wp-reminder-card");
-    card.setAttribute("role", "status");
-    card.append(element("div", "wp-reminder-title", "Waypoints is active"));
-    card.append(element("div", "wp-reminder-copy", "Use Waypoints for this chat?"));
-    const actions = element("div", "wp-reminder-actions");
-    const count = element("span", "wp-reminder-count", String(durationMs / 1000) + "s");
-    actions.append(count, button("No", () => chooseReminder(chatId, version, false)), button("Yes", () => chooseReminder(chatId, version, true), "primary"));
-    card.append(actions);
-    const track = element("div", "wp-reminder-track");
-    const progress = element("div", "wp-reminder-progress");
-    track.append(progress);
-    card.append(track);
-    widget.root.className = "wp-reminder";
-    widget.root.replaceChildren(card);
-    reminder = { chatId, version, widget, durationMs, deadline: Date.now() + durationMs, interval: setInterval(updateReminder, 50), count, progress };
-    updateReminder();
+    if (!shouldShowReminder(view)) return;
+    const settings = view.settings;
+    reminder = {
+      chatId,
+      version: selectionVersion,
+      enabled: view.chatEnabled,
+      clickToggle: settings.reminderClickToggle,
+      neverAgain: settings.reminderNeverAgain,
+      timeline: reminderTimeline(settings, Date.now()),
+      interval: setInterval(tickReminder, 50),
+      toggling: false,
+    };
+    tickReminder();
   }
 
   function isCurrentSelection(version: number): boolean {
@@ -460,6 +558,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         syncActionControls();
         syncHud();
         if (reminder && !loaded.settings.reminderToast) dismissReminder();
+        // Keep a showing reminder truthful when the chat is toggled elsewhere.
+        if (reminder && reminder.chatId === loaded.chatId && !reminder.toggling && reminder.enabled !== loaded.chatEnabled) {
+          reminder.enabled = loaded.chatEnabled;
+          paintReminder(reminder);
+        }
         maybeShowReminder();
       } while (flight.queued);
     })().finally(() => {
@@ -738,6 +841,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       actionBarButton.hidden = !actionBarVisible;
       actionBarButton.disabled = busy || !view;
       actionBarButton.title = view?.chatId ? "Waypoints controls — " + (view.chatEnabled ? "ON" : "OFF") : "Waypoints controls";
+      const tinted = settings?.actionBarStatusColor === true && Boolean(view?.chatId);
+      actionBarButton.classList.toggle("wp-status-on", tinted && view?.chatEnabled === true);
+      actionBarButton.classList.toggle("wp-status-off", tinted && view?.chatEnabled !== true);
       actionBarButton.setAttribute("aria-label", actionBarButton.title);
     }
     const extrasVisible = settings?.extrasActions === true && !busy && Boolean(view?.chatId);
@@ -835,6 +941,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     for (const descriptor of [
       ["waypoints", "Waypoints"],
       ["storyline", "Storyline"],
+      ["prompts", "Prompts"],
       ["settings", "Settings"],
     ] as const) {
       const targetPage = descriptor[0];
@@ -1563,16 +1670,52 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     return value.reason;
   }
 
-  function renderSettings(parent: HTMLElement): void {
-    const settings = element("section", "wp-section");
-    settings.append(element("h3", "", "Settings"));
-    settings.append(element("p", "wp-help", "Edits stay in this draft until you select Save settings. Invalid drafts never change live behavior."));
+  /** Opens a Prompts or Settings section; both tabs edit and save one shared draft. */
+  function draftSection(parent: HTMLElement, title: string): { section: HTMLElement; validation: HTMLElement } {
+    const section = element("section", "wp-section");
+    section.append(element("h3", "", title));
+    section.append(element("p", "wp-help", "Edits on the Prompts and Settings tabs share one draft until you select Save changes. Invalid drafts never change live behavior."));
     const validation = element("div", "wp-validation");
     updateDraftValidation(validation);
-    settings.append(validation);
+    section.append(validation);
+    parent.append(section);
+    return { section, validation };
+  }
 
-    settings.append(element("h4", "", "Prompt"));
-    addField(settings, "Scene-shaping template", "Required placeholders: {{scene_excerpt}} and {{handoff_tag}}. {{override_tag}} is optional but recommended.", (target) =>
+  function renderDraftActions(section: HTMLElement, resetLabel: string, keys: readonly (keyof WaypointSettings)[], resetNotice: string): void {
+    const actions = element("div", "wp-actions");
+    actions.append(
+      button("Save changes", () => safely(async () => {
+        const validationResult = draftValidation(draft);
+        if (!validationResult.valid) throw new Error(validationResult.messages.join(" "));
+        const result = safeRecord(await rpc("save-settings", { settings: draft }));
+        const saved = isRecord(result.settings) ? result.settings as unknown as WaypointSettings : null;
+        if (saved) {
+          draft = cloneSettingsDraft(saved);
+          draftInitialized = true;
+          const warnings = Array.isArray(result.warnings) ? result.warnings.filter((item: unknown): item is string => typeof item === "string") : [];
+          setNotice(warnings.length ? "Settings saved. " + warnings.join(" ") : "Settings saved.");
+        }
+        await load();
+      }), "primary"),
+      button("Discard draft", () => {
+        if (view) draft = cloneSettingsDraft(view.settings);
+        render();
+      }),
+      // Resets only this tab's fields, and only in the draft, so it can still be discarded.
+      button(resetLabel, () => {
+        draft = resetDraftFields(draft, keys);
+        setNotice(resetNotice);
+        render();
+      }, "danger"),
+    );
+    section.append(actions);
+  }
+
+  function renderPrompts(parent: HTMLElement): void {
+    const { section, validation } = draftSection(parent, "Prompts");
+    section.append(element("h4", "", "Scene prompt"));
+    addField(section, "Scene-shaping template", "Required placeholders: {{scene_excerpt}} and {{handoff_tag}}. {{override_tag}} is optional but recommended.", (target) =>
       ctx.components.mountTextArea(target, {
         value: draft.promptTemplate,
         rows: 16,
@@ -1584,7 +1727,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       }),
     );
     const promptGrid = element("div", "wp-grid");
-    settings.append(promptGrid);
+    section.append(promptGrid);
     addField(promptGrid, "Prewritten-scene limit", "Characters retained after exclusion filtering.", (target) =>
       ctx.components.mountNumericInput(target, {
         value: draft.prewrittenSceneCharLimit,
@@ -1634,7 +1777,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       }),
     );
     const autoTarget = element("div", "wp-native");
-    settings.append(autoTarget);
+    section.append(autoTarget);
     componentHandles.push(ctx.components.mountCheckbox(autoTarget, {
       checked: draft.autoPrompt,
       label: "Automatically insert the rendered prompt before generation",
@@ -1682,11 +1825,11 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       "wp-help",
       "The narrative overview has its own pair: {{if::{{waypoints_storyline_active}}}}{{waypoints_storyline}}{{/if}}. It is active when the open chat has the overview switched on in the Storyline tab. To write your own wrapper, use {{waypoints_storyline_overview}} (raw overview text), {{waypoints_storyline_position}} (story progress sentence), and {{waypoints_current_waypoint}}, {{waypoints_next_waypoint}}, and {{waypoints_waypoint_count}} (scene numbers along the storyline).",
     ));
-    settings.append(loomHelp);
+    section.append(loomHelp);
 
-    settings.append(element("div", "wp-divider"));
-    settings.append(element("h4", "", "Storyline"));
-    addField(settings, "Overview prompt template", "Wraps a character's narrative overview when it is added to prompts. Required: {{storyline_overview}}. Optional: {{storyline_position}} and {{character_name}}.", (target) =>
+    section.append(element("div", "wp-divider"));
+    section.append(element("h4", "", "Storyline prompts"));
+    addField(section, "Overview prompt template", "Wraps a character's narrative overview when it is added to prompts. Required: {{storyline_overview}}. Optional: {{storyline_position}} and {{character_name}}.", (target) =>
       ctx.components.mountTextArea(target, {
         value: draft.storylineTemplate,
         rows: 9,
@@ -1697,7 +1840,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         },
       }),
     );
-    addField(settings, "Overview generator instructions", "Sent to the model by Generate overview. Required: {{waypoints}}. Optional: {{story_context}} (character and persona details chosen in the Storyline tab), {{character_name}}, {{user_name}}, {{character_description}}, {{character_personality}}, {{character_scenario}}, {{user_persona}}, {{author_notes}}, and {{waypoint_count}}. Lumiverse macros such as {{user}} and {{char}} are expanded before sending.", (target) =>
+    addField(section, "Overview generator instructions", "Sent to the model by Generate overview. Required: {{waypoints}}. Optional: {{story_context}} (character and persona details chosen in the Storyline tab), {{character_name}}, {{user_name}}, {{character_description}}, {{character_personality}}, {{character_scenario}}, {{user_persona}}, {{author_notes}}, and {{waypoint_count}}. Lumiverse macros such as {{user}} and {{char}} are expanded before sending.", (target) =>
       ctx.components.mountTextArea(target, {
         value: draft.storylineGeneratorTemplate,
         rows: 12,
@@ -1709,7 +1852,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       }),
     );
     const storyGrid = element("div", "wp-grid");
-    settings.append(storyGrid);
+    section.append(storyGrid);
     addField(storyGrid, "Overview insertion depth", "Uses the prompt role above. At the same depth as the scene prompt, the overview comes first.", (target) =>
       ctx.components.mountNumericInput(target, {
         value: draft.storylineInsertionDepth,
@@ -1734,12 +1877,148 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         },
       }),
     );
-    settings.append(element("p", "wp-help", "The generator's connection and model are chosen in the Storyline tab, next to Generate overview."));
+    section.append(element("p", "wp-help", "The generator's connection and model are chosen in the Storyline tab, next to Generate overview."));
 
-    settings.append(element("div", "wp-divider"));
-    settings.append(element("h4", "", "Handoff"));
+    renderDraftActions(section, "Reset prompts to defaults", PROMPT_SETTING_KEYS, "Prompt defaults restored in the draft. Select Save changes to apply them.");
+  }
+
+  /** A checkbox from the host's component kit, appended to parent. */
+  function addCheckbox(
+    parent: HTMLElement,
+    validation: HTMLElement,
+    label: string,
+    hint: string,
+    checked: boolean,
+    changed: (checked: boolean) => void,
+  ): void {
+    const target = element("div", "wp-native");
+    parent.append(target);
+    componentHandles.push(ctx.components.mountCheckbox(target, {
+      checked,
+      label,
+      hint,
+      onChange: (value) => {
+        changed(value);
+        updateDraftValidation(validation);
+      },
+    }));
+  }
+
+  /** Indented options that only show while their parent option is on. */
+  function childOptions(parent: HTMLElement, visible: boolean): HTMLElement {
+    const group = element("div", "wp-suboptions");
+    group.hidden = !visible;
+    parent.append(group);
+    return group;
+  }
+
+  function addSecondsField(
+    parent: HTMLElement,
+    validation: HTMLElement,
+    label: string,
+    help: string,
+    field: "reminderDurationSeconds" | "reminderFadeSeconds" | "reminderDelaySeconds",
+    min: number,
+    max: number,
+  ): void {
+    addField(parent, label, help, (target) =>
+      ctx.components.mountNumericInput(target, {
+        value: draft[field],
+        min,
+        max,
+        step: 0.5,
+        ariaLabel: label,
+        onChange: (value) => {
+          if (value !== null) draft[field] = value;
+          updateDraftValidation(validation);
+        },
+      }),
+    );
+  }
+
+  function renderSettings(parent: HTMLElement): void {
+    const { section, validation } = draftSection(parent, "Settings");
+
+    section.append(element("h4", "", "New chats"));
+    addField(section, "Starting state", "Applies only the first time a chat is opened. Chats you have opened before keep their own on or off state.", (target) =>
+      ctx.components.mountSelect(target, {
+        value: draft.newChatsEnabled ? "on" : "off",
+        options: [
+          { value: "on", label: "Waypoints ON for new chats" },
+          { value: "off", label: "Waypoints OFF for new chats" },
+        ],
+        onChange: (value) => {
+          if (value === "on" || value === "off") draft.newChatsEnabled = value === "on";
+          updateDraftValidation(validation);
+        },
+      }),
+    );
+
+    section.append(element("div", "wp-divider"));
+    section.append(element("h4", "", "Interface"));
+    addCheckbox(section, validation, "Show floating ON / Undo / Force controls", "Enabled by default. Lumiverse owns its drag position and reset behavior.", draft.floatingControls, (checked) => {
+      draft.floatingControls = checked;
+    });
+
+    let reminderOptions: HTMLElement | null = null;
+    addCheckbox(section, validation, "Show a reminder when a chat opens", "A thin floating bar that says whether Waypoints is enabled or disabled for the chat. Requires ui_panels permission.", draft.reminderToast, (checked) => {
+      draft.reminderToast = checked;
+      if (reminderOptions) reminderOptions.hidden = !checked;
+    });
+    reminderOptions = childOptions(section, draft.reminderToast);
+    addField(reminderOptions, "Show the reminder on", "Chats without an alternate greeting never show it.", (target) =>
+      ctx.components.mountSelect(target, {
+        value: draft.reminderShowOn,
+        options: [
+          { value: "enabled", label: "Chats where Waypoints is enabled" },
+          { value: "disabled", label: "Chats where Waypoints is disabled" },
+          { value: "all", label: "All chats" },
+        ],
+        onChange: (value) => {
+          if (value === "enabled" || value === "disabled" || value === "all") draft.reminderShowOn = value;
+          updateDraftValidation(validation);
+        },
+      }),
+    );
+    addCheckbox(reminderOptions, validation, "Click the reminder to turn Waypoints on or off", "Adds a \"click here to DISABLE\" (or ENABLE) line to the reminder.", draft.reminderClickToggle, (checked) => {
+      draft.reminderClickToggle = checked;
+    });
+    addCheckbox(reminderOptions, validation, "Offer \"Never remind me for this chat\"", "Hides the reminder for a chat when it times out with the box ticked. Turning this off shows the reminder in every chat again once saved.", draft.reminderNeverAgain, (checked) => {
+      draft.reminderNeverAgain = checked;
+    });
+    addSecondsField(reminderOptions, validation, "Duration (seconds)", "How long the reminder stays before it goes away.", "reminderDurationSeconds", 0.5, 300);
+    let fadeField: HTMLElement | null = null;
+    addCheckbox(reminderOptions, validation, "Fade out?", "Fade the reminder away instead of closing it at once.", draft.reminderFadeOut, (checked) => {
+      draft.reminderFadeOut = checked;
+      if (fadeField) fadeField.hidden = !checked;
+    });
+    fadeField = childOptions(reminderOptions, draft.reminderFadeOut);
+    addSecondsField(fadeField, validation, "Fade-out duration (seconds)", "How long the reminder takes to fade away.", "reminderFadeSeconds", 0, 60);
+    let delayField: HTMLElement | null = null;
+    addCheckbox(reminderOptions, validation, "Delay?", "Wait before showing the reminder after a chat opens.", draft.reminderDelay, (checked) => {
+      draft.reminderDelay = checked;
+      if (delayField) delayField.hidden = !checked;
+    });
+    delayField = childOptions(reminderOptions, draft.reminderDelay);
+    addSecondsField(delayField, validation, "Delay (seconds)", "How long to wait before the reminder appears.", "reminderDelaySeconds", 0, 60);
+
+    let actionBarOptions: HTMLElement | null = null;
+    addCheckbox(section, validation, "Show the compass button in the chat action bar", "Adds a compact Waypoints menu beside the buttons above the input box.", draft.actionBarButton, (checked) => {
+      draft.actionBarButton = checked;
+      if (actionBarOptions) actionBarOptions.hidden = !checked;
+    });
+    actionBarOptions = childOptions(section, draft.actionBarButton);
+    addCheckbox(actionBarOptions, validation, "Color the button by chat state", "Green when Waypoints is enabled for the open chat, red when it is disabled.", draft.actionBarStatusColor, (checked) => {
+      draft.actionBarStatusColor = checked;
+    });
+    addCheckbox(section, validation, "Show Waypoints actions in the Extras menu", "Adds Toggle, Choose current greeting, Choose next greeting, Undo, and Force entries under Lumiverse's native Extras popover.", draft.extrasActions, (checked) => {
+      draft.extrasActions = checked;
+    });
+
+    section.append(element("div", "wp-divider"));
+    section.append(element("h4", "", "Handoff"));
     const handoffGrid = element("div", "wp-grid");
-    settings.append(handoffGrid);
+    section.append(handoffGrid);
     let updateHandoffPreviews = () => {};
     addField(handoffGrid, "Handoff tag name", "Waypoints recognizes both self-closing and paired forms.", (target) =>
       ctx.components.mountTextInput(target, {
@@ -1768,16 +2047,16 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     previews.append(handoffPreview);
     previews.append(document.createTextNode(" and "));
     previews.append(overridePreview);
-    settings.append(previews);
+    section.append(previews);
     updateHandoffPreviews = () => {
       handoffPreview.textContent = handoffTag(draft);
       overridePreview.textContent = overrideTag(draft);
     };
 
-    settings.append(element("div", "wp-divider"));
-    settings.append(element("h4", "", "Advanced"));
+    section.append(element("div", "wp-divider"));
+    section.append(element("h4", "", "Advanced"));
     const advancedGrid = element("div", "wp-grid");
-    settings.append(advancedGrid);
+    section.append(advancedGrid);
     const numericFields: Array<[keyof WaypointSettings, string, string, number, number]> = [
       ["interceptorPriority", "Interceptor priority", "Lower priorities run first.", 0, 1000],
       ["contentProcessorPriority", "Content-processor priority", "Lower priorities run first.", 0, 1000],
@@ -1805,7 +2084,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       );
     }
     const diagnosticsTarget = element("div", "wp-native");
-    settings.append(diagnosticsTarget);
+    section.append(diagnosticsTarget);
     componentHandles.push(ctx.components.mountCheckbox(diagnosticsTarget, {
       checked: draft.diagnosticLogging,
       label: "Keep diagnostic logging",
@@ -1816,95 +2095,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
       },
     }));
 
-    settings.append(element("div", "wp-divider"));
-    settings.append(element("h4", "", "Interface"));
-    const hudTarget = element("div", "wp-native");
-    settings.append(hudTarget);
-    componentHandles.push(ctx.components.mountCheckbox(hudTarget, {
-      checked: draft.floatingControls,
-      label: "Show floating ON / Undo / Force controls",
-      hint: "Enabled by default. Lumiverse owns its drag position and reset behavior.",
-      onChange: (checked) => {
-        draft.floatingControls = checked;
-        updateDraftValidation(validation);
-      },
-    }));
-    const reminderTarget = element("div", "wp-native");
-    settings.append(reminderTarget);
-    componentHandles.push(ctx.components.mountCheckbox(reminderTarget, {
-      checked: draft.reminderToast,
-      label: "Ask whether to use Waypoints when switching chats",
-      hint: "Shows a brief floating reminder when a chat opens. Requires ui_panels permission.",
-      onChange: (checked) => {
-        draft.reminderToast = checked;
-        updateDraftValidation(validation);
-      },
-    }));
-    addField(settings, "When reminder time runs out", "New chats get 10 seconds; existing chats get 5 seconds.", (target) =>
-      ctx.components.mountSelect(target, {
-        value: draft.reminderTimeoutAction,
-        options: [{ value: "yes", label: "Yes — use Waypoints" }, { value: "no", label: "No — turn Waypoints off for this chat" }],
-        onChange: (value) => {
-          if (value === "yes" || value === "no") draft.reminderTimeoutAction = value;
-          updateDraftValidation(validation);
-        },
-      }),
-    );
-    const actionBarTarget = element("div", "wp-native");
-    settings.append(actionBarTarget);
-    componentHandles.push(ctx.components.mountCheckbox(actionBarTarget, {
-      checked: draft.actionBarButton,
-      label: "Show the compass button in the chat action bar",
-      hint: "Adds a compact Waypoints menu beside the buttons above the input box.",
-      onChange: (checked) => {
-        draft.actionBarButton = checked;
-        updateDraftValidation(validation);
-      },
-    }));
-    const extrasTarget = element("div", "wp-native");
-    settings.append(extrasTarget);
-    componentHandles.push(ctx.components.mountCheckbox(extrasTarget, {
-      checked: draft.extrasActions,
-      label: "Show Waypoints actions in the Extras menu",
-      hint: "Adds Toggle, Choose current greeting, Choose next greeting, Undo, and Force entries under Lumiverse's native Extras popover.",
-      onChange: (checked) => {
-        draft.extrasActions = checked;
-        updateDraftValidation(validation);
-      },
-    }));
-
-    const actions = element("div", "wp-actions");
-    actions.append(
-      button("Save settings", () => safely(async () => {
-        const validationResult = draftValidation(draft);
-        if (!validationResult.valid) throw new Error(validationResult.messages.join(" "));
-        const result = safeRecord(await rpc("save-settings", { settings: draft }));
-        const saved = isRecord(result.settings) ? result.settings as unknown as WaypointSettings : null;
-        if (saved) {
-          draft = cloneSettingsDraft(saved);
-          draftInitialized = true;
-          const warnings = Array.isArray(result.warnings) ? result.warnings.filter((item: unknown): item is string => typeof item === "string") : [];
-          setNotice(warnings.length ? "Settings saved. " + warnings.join(" ") : "Settings saved.");
-        }
-        await load();
-      }), "primary"),
-      button("Discard draft", () => {
-        if (view) draft = cloneSettingsDraft(view.settings);
-        render();
-      }),
-      button("Reset defaults", () => safely(async () => {
-        const result = safeRecord(await rpc("reset-settings"));
-        const saved = isRecord(result.settings) ? result.settings as unknown as WaypointSettings : null;
-        if (saved) {
-          draft = cloneSettingsDraft(saved);
-          draftInitialized = true;
-        }
-        setNotice("Settings reset to defaults.");
-        await load();
-      }), "danger"),
-    );
-    settings.append(actions);
-    parent.append(settings);
+    renderDraftActions(section, "Reset settings to defaults", GENERAL_SETTING_KEYS, "Setting defaults restored in the draft. Prompts are unchanged. Select Save changes to apply them.");
   }
 
   function syncHud(): void {
@@ -1959,6 +2150,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     root.append(pageRoot);
     if (page === "waypoints") renderDashboard(pageRoot);
     else if (page === "storyline") renderStoryline(pageRoot);
+    else if (page === "prompts") renderPrompts(pageRoot);
     else renderSettings(pageRoot);
   }
 
@@ -1981,19 +2173,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   disposers.push(tab.onActivate(refresh));
   disposers.push(ctx.events.on("CHAT_SWITCHED", refresh));
   disposers.push(ctx.events.on("CHAT_CHANGED", refresh));
-  disposers.push(ctx.events.on("CHAT_CREATED", (payload) => {
-    const data = safeRecord(payload);
-    const chat = safeRecord(data.chat);
-    const chatId = typeof data.id === "string" ? data.id : typeof chat.id === "string" ? chat.id : null;
-    if (!chatId) return;
-    createdChatIds.set(chatId, Date.now());
-    if (reminder?.chatId === chatId && reminder.durationMs === 5_000) {
-      createdChatIds.delete(chatId);
-      reminder.durationMs = 10_000;
-      reminder.deadline += 5_000;
-      updateReminder();
-    }
-  }));
   const selectionChanged = () => { if (syncSelection()) refresh(); };
   let subscribed = false;
   try {

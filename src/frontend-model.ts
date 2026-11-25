@@ -3,7 +3,7 @@ import { nextGreetingChoices } from "./state";
 import { cardOrder, sameRoute } from "./storyline";
 import type { Greeting, StorylineCharacterView, WaypointSettings, WaypointsView } from "./types";
 
-export const DRAWER_PAGES = ["waypoints", "storyline", "settings"] as const;
+export const DRAWER_PAGES = ["waypoints", "storyline", "prompts", "settings"] as const;
 export type DrawerPage = typeof DRAWER_PAGES[number];
 export type GreetingPickerKind = "current" | "next";
 
@@ -27,6 +27,81 @@ export function cloneSettingsDraft(settings: WaypointSettings): WaypointSettings
 
 export function resetSettingsDraft(): WaypointSettings {
   return structuredClone(DEFAULT_SETTINGS);
+}
+
+/** Settings edited on the Prompts tab. */
+export const PROMPT_SETTING_KEYS = [
+  "promptTemplate",
+  "prewrittenSceneCharLimit",
+  "promptExcludeRegex",
+  "insertionDepth",
+  "promptRole",
+  "autoPrompt",
+  "storylineTemplate",
+  "storylineGeneratorTemplate",
+  "storylineInsertionDepth",
+  "storylineWaypointCharLimit",
+] as const satisfies readonly (keyof WaypointSettings)[];
+
+/** Settings edited on the Storyline tab, which saves them on its own. */
+const STORYLINE_TAB_SETTING_KEYS: readonly (keyof WaypointSettings)[] = ["storylineConnectionId", "storylineModel"];
+
+/** Settings edited on the Settings tab: everything not on the Prompts or Storyline tab. */
+export const GENERAL_SETTING_KEYS = (Object.keys(DEFAULT_SETTINGS) as (keyof WaypointSettings)[])
+  .filter((key) => !(PROMPT_SETTING_KEYS as readonly string[]).includes(key) && !STORYLINE_TAB_SETTING_KEYS.includes(key));
+
+/** Returns the draft with only the given fields put back to their defaults. */
+export function resetDraftFields(settings: WaypointSettings, keys: readonly (keyof WaypointSettings)[]): WaypointSettings {
+  const next = structuredClone(settings) as unknown as Record<string, unknown>;
+  const defaults = structuredClone(DEFAULT_SETTINGS) as unknown as Record<string, unknown>;
+  for (const key of keys) next[key] = defaults[key];
+  return next as unknown as WaypointSettings;
+}
+
+type ReminderView = Pick<WaypointsView, "chatId" | "chatEnabled" | "greetings" | "grantedPermissions" | "settings" | "reminderHidden">;
+
+/** Whether the chat-open reminder applies to this chat under the current settings. */
+export function shouldShowReminder(view: ReminderView): boolean {
+  const settings = view.settings;
+  if (!view.chatId || !settings.reminderToast || !view.grantedPermissions.includes("ui_panels")) return false;
+  // Without an alternate greeting Waypoints cannot run here, so there is nothing to remind about.
+  if (view.greetings.length < 2) return false;
+  if (settings.reminderNeverAgain && view.reminderHidden) return false;
+  if (settings.reminderShowOn === "enabled") return view.chatEnabled;
+  if (settings.reminderShowOn === "disabled") return !view.chatEnabled;
+  return true;
+}
+
+export interface ReminderTimeline {
+  /** When the reminder appears. */
+  showAt: number;
+  /** When it starts to fade (or disappears, without a fade). */
+  hideAt: number;
+  /** When it is gone. */
+  goneAt: number;
+}
+
+export function reminderTimeline(
+  settings: Pick<WaypointSettings, "reminderDurationSeconds" | "reminderFadeOut" | "reminderFadeSeconds" | "reminderDelay" | "reminderDelaySeconds">,
+  now: number,
+  withDelay = true,
+): ReminderTimeline {
+  const showAt = now + (withDelay && settings.reminderDelay ? settings.reminderDelaySeconds * 1000 : 0);
+  const hideAt = showAt + settings.reminderDurationSeconds * 1000;
+  return { showAt, hideAt, goneAt: hideAt + (settings.reminderFadeOut ? settings.reminderFadeSeconds * 1000 : 0) };
+}
+
+export type ReminderPhase =
+  | { phase: "waiting" }
+  | { phase: "showing"; remaining: number }
+  | { phase: "fading"; opacity: number }
+  | { phase: "gone" };
+
+export function reminderPhase(timeline: ReminderTimeline, now: number): ReminderPhase {
+  if (now < timeline.showAt) return { phase: "waiting" };
+  if (now < timeline.hideAt) return { phase: "showing", remaining: (timeline.hideAt - now) / (timeline.hideAt - timeline.showAt) };
+  if (now < timeline.goneAt) return { phase: "fading", opacity: (timeline.goneAt - now) / (timeline.goneAt - timeline.hideAt) };
+  return { phase: "gone" };
 }
 
 export function draftValidation(settings: WaypointSettings): { valid: boolean; messages: string[] } {

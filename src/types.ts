@@ -5,8 +5,13 @@ export const HANDOFF_EXTRA_KEY = "lumiverse_waypoints.handoff";
 export const INSERTED_GREETING_METADATA_KEY = "lumiverse_waypoints";
 /** Per-character storylines live in user storage, shared by every chat with that character. */
 export const STORYLINE_PATH_PREFIX = "storylines/";
+/** Chats where the user ticked "Never remind me for this chat" before the reminder timed out. */
+export const REMINDER_HIDDEN_PATH = "reminder-hidden.json";
 
 export type PromptRole = "system" | "user" | "assistant";
+
+/** Which chats show the chat-open reminder, by their Waypoints state. */
+export type ReminderShowOn = "enabled" | "disabled" | "all";
 
 export interface WaypointSettings {
   promptTemplate: string;
@@ -28,9 +33,23 @@ export interface WaypointSettings {
   diagnosticLogging: boolean;
   diagnosticLineLimit: number;
   floatingControls: boolean;
+  /** Waypoints state for a chat the first time it is opened. Later visits keep the chat's own state. */
+  newChatsEnabled: boolean;
+  /** Show the floating reminder when a chat opens. */
   reminderToast: boolean;
-  reminderTimeoutAction: "yes" | "no";
+  reminderShowOn: ReminderShowOn;
+  /** Clicking the reminder flips Waypoints for the chat. */
+  reminderClickToggle: boolean;
+  /** Offer a "Never remind me for this chat" checkbox. Turning this off clears every hidden chat. */
+  reminderNeverAgain: boolean;
+  reminderDurationSeconds: number;
+  reminderFadeOut: boolean;
+  reminderFadeSeconds: number;
+  reminderDelay: boolean;
+  reminderDelaySeconds: number;
   actionBarButton: boolean;
+  /** Tint the action-bar button green or red to show the chat's Waypoints state. */
+  actionBarStatusColor: boolean;
   extrasActions: boolean;
   /** Prompt that wraps a character's narrative overview when it is injected. */
   storylineTemplate: string;
@@ -276,6 +295,8 @@ export interface WaypointsView {
   /** Routes this chat follows, keyed by character ID. Empty when no route applies. */
   routes: Record<string, number[]>;
   storyline: StorylineView;
+  /** The user asked never to see the chat-open reminder for this chat. */
+  reminderHidden: boolean;
   diagnostics: string[];
 }
 

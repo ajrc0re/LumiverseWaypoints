@@ -34,6 +34,7 @@ import {
   buildGreetingContext,
   chatRoutes,
   consumePendingHandoff,
+  emptyChatState,
   greetingForSelection,
   groupCharacterIds,
   nextGreetingChoices,
@@ -48,6 +49,7 @@ import {
   EXTENSION_ID,
   HANDOFF_EXTRA_KEY,
   INSERTED_GREETING_METADATA_KEY,
+  REMINDER_HIDDEN_PATH,
   SETTINGS_PATH,
 } from "./types";
 import type {
@@ -72,6 +74,8 @@ import type {
 const AUTOMATIC_PERMISSIONS = ["characters", "chats", "chat_mutation", "generation"];
 const CONTEXT_PERMISSIONS = ["characters", "chats"];
 const STORYLINE_GENERATION_PERMISSIONS = ["characters", "chats", "generation"];
+/** Oldest hidden-reminder chats are forgotten past this many, so deleted chats cannot grow the file forever. */
+const REMINDER_HIDDEN_LIMIT = 5000;
 
 export interface StorylineDraftInput {
   /** Greeting indices in story order. Empty or full card order means "every greeting in card order". */
@@ -200,6 +204,8 @@ export class WaypointEngine {
   private diagnosticsLines: string[] = [];
   private readonly storylineCache = new Map<string, CharacterStoryline | null>();
   private readonly generations = new Map<string, AbortController>();
+  /** Chat IDs, oldest first, that never show the chat-open reminder. */
+  private reminderHiddenCache: string[] | null = null;
 
   constructor(
     private readonly api: SpindleAPI,
@@ -242,9 +248,12 @@ export class WaypointEngine {
 
   async saveSettings(draft: unknown): Promise<{ settings: WaypointSettings; warnings: string[] }> {
     const validated = validateSettings(draft);
+    const previous = await this.settings();
     // The host writes one JSON object, so invalid drafts cannot partially apply.
     await this.api.userStorage.setJson(SETTINGS_PATH, validated.settings, { userId: this.userId });
     this.settingsCache = clone(validated.settings);
+    // Turning the "never remind me" option off brings the reminder back to every chat.
+    if (previous.reminderNeverAgain && !validated.settings.reminderNeverAgain) await this.clearReminderHidden();
     if (this.settingsChanged) await this.settingsChanged(clone(validated.settings), this.userId);
     this.note("settings saved");
     return { settings: clone(validated.settings), warnings: validated.warnings };
@@ -261,6 +270,39 @@ export class WaypointEngine {
       storylineConnectionId: typeof input.connectionId === "string" ? input.connectionId : settings.storylineConnectionId,
       storylineModel: typeof input.model === "string" ? input.model : settings.storylineModel,
     });
+  }
+
+  private async reminderHiddenChats(): Promise<string[]> {
+    if (!this.reminderHiddenCache) {
+      let stored: unknown = null;
+      try {
+        stored = await this.api.userStorage.getJson<unknown>(REMINDER_HIDDEN_PATH, { fallback: null, userId: this.userId });
+      } catch {
+        stored = null;
+      }
+      const ids = isRecord(stored) && Array.isArray(stored.chatIds) ? stored.chatIds : [];
+      this.reminderHiddenCache = [...new Set(ids.filter((id): id is string => typeof id === "string" && id.length > 0))];
+    }
+    return [...this.reminderHiddenCache];
+  }
+
+  private async writeReminderHidden(chatIds: string[]): Promise<void> {
+    const kept = chatIds.slice(-REMINDER_HIDDEN_LIMIT);
+    await this.api.userStorage.setJson(REMINDER_HIDDEN_PATH, { version: 1, chatIds: kept }, { userId: this.userId });
+    this.reminderHiddenCache = kept;
+  }
+
+  /** Hides (or shows again) the chat-open reminder for one chat. */
+  async setReminderHidden(chatId: string, hidden: boolean): Promise<void> {
+    const current = (await this.reminderHiddenChats()).filter((id) => id !== chatId);
+    await this.writeReminderHidden(hidden ? [...current, chatId] : current);
+    this.note("chat " + chatId + " reminder " + (hidden ? "hidden" : "shown"));
+  }
+
+  /** Shows the chat-open reminder in every chat again. */
+  async clearReminderHidden(): Promise<void> {
+    await this.writeReminderHidden([]);
+    this.note("reminder shown for all chats again");
   }
 
   async resetSettings(): Promise<{ settings: WaypointSettings; warnings: string[] }> {
@@ -339,11 +381,25 @@ export class WaypointEngine {
   }
 
   private async state(chatId: string): Promise<WaypointChatState> {
+    return (await this.storedState(chatId)).state;
+  }
+
+  /**
+   * A chat with no stored state has never been opened with Waypoints, so it
+   * starts from the "new chats" setting. `fresh` tells view() to save that
+   * starting state, so later visits keep it even if the setting changes.
+   */
+  private async storedState(chatId: string): Promise<{ state: WaypointChatState; fresh: boolean }> {
+    let stored: string | undefined | null;
     try {
-      return parseChatState(await this.api.variables.chat.get(chatId, CHAT_STATE_KEY));
+      stored = await this.api.variables.chat.get(chatId, CHAT_STATE_KEY);
     } catch {
-      return parseChatState(null);
+      return { state: parseChatState(null), fresh: false };
     }
+    if (stored) return { state: parseChatState(stored), fresh: false };
+    const state = emptyChatState();
+    state.chatEnabled = (await this.settings()).newChatsEnabled;
+    return { state, fresh: true };
   }
 
   private async persistState(chatId: string, state: WaypointChatState): Promise<void> {
@@ -1238,6 +1294,7 @@ export class WaypointEngine {
       },
       routes: {},
       storyline: emptyStorylineView(reason),
+      reminderHidden: false,
       diagnostics: this.diagnostics(),
     };
   }
@@ -1255,8 +1312,17 @@ export class WaypointEngine {
     }
     return this.serial(resolvedChatId, async () => {
       const context = await this.context(resolvedChatId);
-      const state = reconcileChatState(await this.state(resolvedChatId), context);
+      const stored = await this.storedState(resolvedChatId);
+      const state = reconcileChatState(stored.state, context);
       await this.reconcileJournalLocked(resolvedChatId, state, context, settings);
+      // A chat without an alternate greeting stays unwritten (see below), so
+      // it takes the starting state when it first gains one.
+      if (stored.fresh && context.greetings.length > 1) {
+        await this.persistState(resolvedChatId, state).catch((error) => {
+          this.warn("could not save the starting state for chat " + resolvedChatId + ": " + (error instanceof Error ? error.message : String(error)));
+        });
+        this.note("chat " + resolvedChatId + " opened for the first time; Waypoints " + (state.chatEnabled ? "on" : "off"));
+      }
       const prompt = this.promptStatus(context, state, settings);
       const active = greetingForSelection(context.greetings, state.active);
       const upcoming = greetingForSelection(context.greetings, state.upcoming);
@@ -1296,6 +1362,7 @@ export class WaypointEngine {
         prompt,
         routes: chatRoutes(context, state),
         storyline: this.storylineView(context, state, settings),
+        reminderHidden: settings.reminderNeverAgain && (await this.reminderHiddenChats()).includes(resolvedChatId),
         diagnostics: this.diagnostics(),
       };
     });

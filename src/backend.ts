@@ -228,6 +228,11 @@ async function handleRequest(raw: unknown, userId?: string): Promise<void> {
       case "set-storyline-generator":
         result = await current.setStorylineGenerator({ connectionId: input.connectionId, model: input.model });
         break;
+      case "set-reminder-hidden":
+        if (!selectedChatId || typeof input.hidden !== "boolean") throw new Error("Choose a chat and whether to hide its reminder.");
+        await current.setReminderHidden(selectedChatId, input.hidden);
+        result = { hidden: input.hidden };
+        break;
       case "list-connections":
         result = await current.listConnections();
         break;

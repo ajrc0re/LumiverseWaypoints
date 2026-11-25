@@ -1,6 +1,7 @@
 import { isRecord } from "./util";
 import type {
   PromptRole,
+  ReminderShowOn,
   SettingsValidationIssue,
   SettingsValidationResult,
   WaypointSettings,
@@ -155,9 +156,18 @@ export const DEFAULT_SETTINGS: WaypointSettings = {
   diagnosticLogging: true,
   diagnosticLineLimit: 96,
   floatingControls: true,
+  newChatsEnabled: true,
   reminderToast: true,
-  reminderTimeoutAction: "yes",
+  reminderShowOn: "enabled",
+  reminderClickToggle: true,
+  reminderNeverAgain: true,
+  reminderDurationSeconds: 5,
+  reminderFadeOut: true,
+  reminderFadeSeconds: 5,
+  reminderDelay: true,
+  reminderDelaySeconds: 1,
   actionBarButton: true,
+  actionBarStatusColor: true,
   extrasActions: true,
   storylineTemplate: DEFAULT_STORYLINE_TEMPLATE,
   storylineGeneratorTemplate: DEFAULT_STORYLINE_GENERATOR_TEMPLATE,
@@ -249,12 +259,35 @@ function readRole(
   return value as PromptRole;
 }
 
-function readReminderTimeoutAction(input: Record<string, unknown>, issues: SettingsValidationIssue[]): "yes" | "no" {
-  const value = input.reminderTimeoutAction;
-  if (value === undefined) return DEFAULT_SETTINGS.reminderTimeoutAction;
-  if (value === "yes" || value === "no") return value;
-  issues.push({ field: "reminderTimeoutAction", message: "Reminder timeout action must be Yes or No." });
-  return DEFAULT_SETTINGS.reminderTimeoutAction;
+/** Reads a number of seconds; fractions are allowed and kept to tenths. */
+function readSeconds(
+  input: Record<string, unknown>,
+  field: keyof WaypointSettings,
+  fallback: number,
+  min: number,
+  max: number,
+  issues: SettingsValidationIssue[],
+): number {
+  const value = input[field];
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
+    issues.push({
+      field,
+      message: String(field) + " must be a number of seconds from " + String(min) + " to " + String(max) + ".",
+    });
+    return fallback;
+  }
+  return Math.round(value * 10) / 10;
+}
+
+const REMINDER_SHOW_ON: ReadonlySet<string> = new Set(["enabled", "disabled", "all"]);
+
+function readReminderShowOn(input: Record<string, unknown>, issues: SettingsValidationIssue[]): ReminderShowOn {
+  const value = input.reminderShowOn;
+  if (value === undefined) return DEFAULT_SETTINGS.reminderShowOn;
+  if (typeof value === "string" && REMINDER_SHOW_ON.has(value)) return value as ReminderShowOn;
+  issues.push({ field: "reminderShowOn", message: "Show the reminder on must be enabled chats, disabled chats, or all chats." });
+  return DEFAULT_SETTINGS.reminderShowOn;
 }
 
 export function validateTagName(value: string): boolean {
@@ -377,9 +410,18 @@ export function validateSettings(input: unknown): SettingsValidationResult {
     diagnosticLogging: readBoolean(source, "diagnosticLogging", DEFAULT_SETTINGS.diagnosticLogging, issues),
     diagnosticLineLimit: readInteger(source, "diagnosticLineLimit", DEFAULT_SETTINGS.diagnosticLineLimit, 10, 500, issues),
     floatingControls: readBoolean(source, "floatingControls", DEFAULT_SETTINGS.floatingControls, issues),
+    newChatsEnabled: readBoolean(source, "newChatsEnabled", DEFAULT_SETTINGS.newChatsEnabled, issues),
     reminderToast: readBoolean(source, "reminderToast", DEFAULT_SETTINGS.reminderToast, issues),
-    reminderTimeoutAction: readReminderTimeoutAction(source, issues),
+    reminderShowOn: readReminderShowOn(source, issues),
+    reminderClickToggle: readBoolean(source, "reminderClickToggle", DEFAULT_SETTINGS.reminderClickToggle, issues),
+    reminderNeverAgain: readBoolean(source, "reminderNeverAgain", DEFAULT_SETTINGS.reminderNeverAgain, issues),
+    reminderDurationSeconds: readSeconds(source, "reminderDurationSeconds", DEFAULT_SETTINGS.reminderDurationSeconds, 0.5, 300, issues),
+    reminderFadeOut: readBoolean(source, "reminderFadeOut", DEFAULT_SETTINGS.reminderFadeOut, issues),
+    reminderFadeSeconds: readSeconds(source, "reminderFadeSeconds", DEFAULT_SETTINGS.reminderFadeSeconds, 0, 60, issues),
+    reminderDelay: readBoolean(source, "reminderDelay", DEFAULT_SETTINGS.reminderDelay, issues),
+    reminderDelaySeconds: readSeconds(source, "reminderDelaySeconds", DEFAULT_SETTINGS.reminderDelaySeconds, 0, 60, issues),
     actionBarButton: readBoolean(source, "actionBarButton", DEFAULT_SETTINGS.actionBarButton, issues),
+    actionBarStatusColor: readBoolean(source, "actionBarStatusColor", DEFAULT_SETTINGS.actionBarStatusColor, issues),
     extrasActions: readBoolean(source, "extrasActions", DEFAULT_SETTINGS.extrasActions, issues),
     storylineTemplate: readString(source, "storylineTemplate", DEFAULT_SETTINGS.storylineTemplate, 16_000, issues),
     storylineGeneratorTemplate: readString(source, "storylineGeneratorTemplate", DEFAULT_SETTINGS.storylineGeneratorTemplate, 16_000, issues),

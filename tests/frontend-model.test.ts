@@ -7,9 +7,15 @@ import {
   approximatePromptTokenCount,
   formatPromptCount,
   greetingPickerOptions,
+  GENERAL_SETTING_KEYS,
+  PROMPT_SETTING_KEYS,
   nextDrawerPage,
+  reminderPhase,
+  reminderTimeline,
+  resetDraftFields,
   resetSettingsDraft,
   shouldRefreshDrawer,
+  shouldShowReminder,
 } from "../src/frontend-model";
 import type { Greeting, WaypointsView } from "../src/types";
 
@@ -20,12 +26,54 @@ describe("drawer model", () => {
     expect(approximatePromptTokenCount(5678)).toBe(1420);
   });
 
-  test("cycles through the Waypoints, Storyline, and Settings tabs", () => {
+  test("cycles through the Waypoints, Storyline, Prompts, and Settings tabs", () => {
     expect(nextDrawerPage("waypoints", "next")).toBe("storyline");
-    expect(nextDrawerPage("storyline", "next")).toBe("settings");
+    expect(nextDrawerPage("storyline", "next")).toBe("prompts");
+    expect(nextDrawerPage("prompts", "next")).toBe("settings");
     expect(nextDrawerPage("settings", "next")).toBe("waypoints");
-    expect(nextDrawerPage("settings", "previous")).toBe("storyline");
+    expect(nextDrawerPage("settings", "previous")).toBe("prompts");
     expect(nextDrawerPage("waypoints", "previous")).toBe("settings");
+  });
+
+  test("splits settings between the Prompts and Settings tabs and resets each on its own", () => {
+    expect(GENERAL_SETTING_KEYS.some((key) => (PROMPT_SETTING_KEYS as readonly string[]).includes(key))).toBe(false);
+    expect(GENERAL_SETTING_KEYS).toContain("reminderShowOn");
+    expect(GENERAL_SETTING_KEYS).not.toContain("storylineConnectionId");
+    const draft = { ...DEFAULT_SETTINGS, promptTemplate: "custom", reminderDurationSeconds: 9, storylineModel: "m" };
+    expect(resetDraftFields(draft, PROMPT_SETTING_KEYS)).toEqual({ ...DEFAULT_SETTINGS, reminderDurationSeconds: 9, storylineModel: "m" });
+    expect(resetDraftFields(draft, GENERAL_SETTING_KEYS)).toEqual({ ...DEFAULT_SETTINGS, promptTemplate: "custom", storylineModel: "m" });
+  });
+
+  test("decides which chats show the reminder", () => {
+    const greetings = [0, 1].map((greetingIndex) => ({ characterId: "a", characterName: "Ada", greetingIndex, text: "" }));
+    const view = (chatEnabled: boolean, changes: Partial<WaypointsView["settings"]> = {}, reminderHidden = false) => ({
+      chatId: "chat", chatEnabled, greetings, grantedPermissions: ["ui_panels"], reminderHidden,
+      settings: { ...DEFAULT_SETTINGS, ...changes },
+    });
+    expect(shouldShowReminder(view(true))).toBe(true);
+    expect(shouldShowReminder(view(false))).toBe(false);
+    expect(shouldShowReminder(view(false, { reminderShowOn: "disabled" }))).toBe(true);
+    expect(shouldShowReminder(view(true, { reminderShowOn: "disabled" }))).toBe(false);
+    expect(shouldShowReminder(view(false, { reminderShowOn: "all" }))).toBe(true);
+    expect(shouldShowReminder(view(true, { reminderToast: false }))).toBe(false);
+    expect(shouldShowReminder(view(true, {}, true))).toBe(false);
+    // Hidden chats come back as soon as the option is off.
+    expect(shouldShowReminder(view(true, { reminderNeverAgain: false }, true))).toBe(true);
+    expect(shouldShowReminder({ ...view(true), greetings: greetings.slice(0, 1) })).toBe(false);
+    expect(shouldShowReminder({ ...view(true), grantedPermissions: [] })).toBe(false);
+  });
+
+  test("times the reminder's delay, duration, and fade", () => {
+    const timeline = reminderTimeline(DEFAULT_SETTINGS, 0);
+    expect(timeline).toEqual({ showAt: 1_000, hideAt: 6_000, goneAt: 11_000 });
+    expect(reminderPhase(timeline, 500)).toEqual({ phase: "waiting" });
+    expect(reminderPhase(timeline, 3_500)).toEqual({ phase: "showing", remaining: 0.5 });
+    expect(reminderPhase(timeline, 8_500)).toEqual({ phase: "fading", opacity: 0.5 });
+    expect(reminderPhase(timeline, 11_000)).toEqual({ phase: "gone" });
+    const plain = { ...DEFAULT_SETTINGS, reminderDelay: false, reminderFadeOut: false, reminderDurationSeconds: 2.5 };
+    expect(reminderTimeline(plain, 100)).toEqual({ showAt: 100, hideAt: 2_600, goneAt: 2_600 });
+    // A restart after a click skips the delay.
+    expect(reminderTimeline(DEFAULT_SETTINGS, 0, false).showAt).toBe(0);
   });
 
   test("keeps settings as a draft until it validates, and resets cleanly", () => {
