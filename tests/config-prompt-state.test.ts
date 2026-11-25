@@ -20,6 +20,28 @@ import {
 } from "../src/state";
 
 describe("configuration and prompt rendering", () => {
+  test("defaults and validates the new-chat and reminder settings", () => {
+    expect(DEFAULT_SETTINGS).toMatchObject({
+      newChatsEnabled: true,
+      reminderToast: true,
+      reminderShowOn: "enabled",
+      reminderClickToggle: true,
+      reminderNeverAgain: true,
+      reminderDurationSeconds: 5,
+      reminderFadeOut: true,
+      reminderFadeSeconds: 5,
+      reminderDelay: true,
+      reminderDelaySeconds: 1,
+      actionBarStatusColor: true,
+    });
+    expect(validateSettings({ ...DEFAULT_SETTINGS, reminderDurationSeconds: 2.25 }).settings.reminderDurationSeconds).toBe(2.3);
+    expect(() => validateSettings({ ...DEFAULT_SETTINGS, reminderDurationSeconds: 0 })).toThrow(SettingsValidationError);
+    expect(() => validateSettings({ ...DEFAULT_SETTINGS, reminderFadeSeconds: "5" })).toThrow(SettingsValidationError);
+    expect(() => validateSettings({ ...DEFAULT_SETTINGS, reminderShowOn: "sometimes" })).toThrow(SettingsValidationError);
+    // The old Yes/No timeout answer is dropped from stored settings.
+    expect(validateSettings({ ...DEFAULT_SETTINGS, reminderTimeoutAction: "no" }).settings).not.toHaveProperty("reminderTimeoutAction");
+  });
+
   test("validates the required prompt placeholders and tag names", () => {
     expect(validateSettings(DEFAULT_SETTINGS).settings.handoffTagName).toBe("inject-prewritten-content");
     expect(DEFAULT_SETTINGS.actionBarButton).toBe(true);

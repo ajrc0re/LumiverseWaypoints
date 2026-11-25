@@ -129,11 +129,11 @@ Pre-run council tools can also use `{{altMessage1}}`, `{{altMessage2}}`, and hig
 
 `{{nextMessages}}` returns the greetings offered by Waypoints' **Next greeting** picker as a JSON array. In solo chats, that means only greetings after the current greeting; in group chats, it matches the picker by including the other members' greetings and excluding the current selection. `{{currentMessage}}` and `{{nextMessage}}` return the configured current and upcoming greeting text, respectively.
 
-## Settings
+## Prompts and Settings tabs
 
-The drawer's **Settings** tab keeps an editable draft. Changes do not affect a live generation while you type; Waypoints validates the complete draft and saves one settings object only after you select **Save settings**.
+The drawer's **Prompts** tab holds every prompt template and prompt option; the **Settings** tab holds everything else. Both tabs edit one shared draft. Changes do not affect a live generation while you type; Waypoints validates the complete draft and saves one settings object only after you select **Save changes** on either tab. **Reset prompts to defaults** and **Reset settings to defaults** each restore only their own tab's fields, and only in the draft, so **Discard draft** can still undo them. The overview generator's connection and model live in the Storyline tab.
 
-### Prompt
+### Prompts tab: scene prompt
 
 The default full scene-shaping template is editable. It supports:
 
@@ -147,7 +147,7 @@ The exclusion regex runs before the excerpt is truncated. It accepts JavaScript-
 
 You can also configure the prompt role, insertion depth (`0` is the newest edge), and whether automatic prompt insertion is enabled.
 
-### Storyline
+### Prompts tab: storyline prompts
 
 | Setting | Meaning |
 | --- | --- |
@@ -160,15 +160,30 @@ If a stored settings file has an invalid value, Waypoints resets only that field
 
 The handoff tag name and override marker are validated before save. Advanced settings expose interceptor/content-processor priority, chat and handoff-read retries, retry delay, pending-handoff and dedupe-journal limits, and diagnostic retention.
 
+### New chats
+
+**Starting state** chooses whether Waypoints is ON (the default) or OFF for a chat the first time you open it. Waypoints saves that state with the chat on first open, so changing the setting later never flips chats you have already opened; each chat keeps its own state, which you can change with **Use Waypoints in this chat** in the drawer. Chats with a single greeting are treated as off with nothing written, since Waypoints has nothing to cycle, and take the starting state when an alternate greeting is added later; enabling them by hand explains there is nothing to cycle.
+
 ### Interface additions
 
 The optional floating ON / Undo / Force control is enabled by default. Lumiverse owns its drag position and reset behavior; Waypoints does not persist a competing position.
 
-The **Interface** section also has a chat-switch reminder, enabled by default. It asks whether to use Waypoints in the selected chat in a small floating widget. New chats get 10 seconds and existing chats get 5 seconds; the bar and second counter show the time left. **Yes** enables Waypoints for that chat and **No** pauses it. The timeout answer defaults to **Yes** and can be changed to **No** in Settings. The reminder appears only in chats where Waypoints is on and there is an alternate greeting to cycle to (new chats start on); a chat where you chose **No**, turned Waypoints off, or that has no alternate greetings never shows the reminder and is never re-enabled by its timeout. A chat's choice is stored with that chat and can be changed later with **Use Waypoints in this chat** in the drawer. Chats with a single greeting are treated as off with nothing written — Waypoints has nothing to cycle — and turn on automatically if an alternate greeting is added later; enabling them by hand explains there is nothing to cycle. The reminder needs `ui_panels` permission and appears only when switching chats, not when the extension first loads. Lumiverse remembers where you drag the reminder and restores that position for later chats, separately from the floating controls.
+The **Interface** section also has a chat-open reminder, enabled by default: a thin floating bar that says **Waypoints is ENABLED for this chat!** (green) or **Waypoints is DISABLED for this chat!** (red), with a slim progress line along the bottom. Its options appear under it while it is on:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| Show the reminder on | Chats where Waypoints is enabled | Or chats where it is disabled, or all chats. Chats without an alternate greeting never show it. |
+| Click the reminder to turn Waypoints on or off | On | Adds a smaller "click here to DISABLE" (or ENABLE) line. Clicking flips the chat, rewords the bar, and keeps it up for a full duration. |
+| Offer "Never remind me for this chat" | On | Adds that checkbox to the bar. If the reminder times out while it is ticked, that chat never shows the reminder again. Closing it early by switching chats does not count. Turning this option off and saving brings the reminder back to every chat. |
+| Duration (seconds) | 5 | How long the bar stays before it goes away. |
+| Fade out? | On, 5 seconds | When on, the bar fades away over this many seconds after its duration; when off, it closes at once. |
+| Delay? | On, 1 second | When on, the bar waits this many seconds after the chat opens before it appears. |
+
+The reminder needs `ui_panels` permission and appears only when switching chats, not when the extension first loads. Lumiverse remembers where you drag it and restores that position for later chats, separately from the floating controls.
 
 The **Interface** section also controls two input-bar surfaces, both enabled by default:
 
-- **Compass button** mounts a compact Waypoints compass beside Lumiverse's native action-bar buttons above the input. Its themed menu contains the chat-level Toggle, Choose current greeting, Choose next greeting, Force, Undo, and Open Waypoints drawer.
+- **Compass button** mounts a compact Waypoints compass beside Lumiverse's native action-bar buttons above the input. Its themed menu contains the chat-level Toggle, Choose current greeting, Choose next greeting, Force, Undo, and Open Waypoints drawer. Its child option **Color the button by chat state**, on by default, turns it green when Waypoints is enabled for the open chat and red when it is disabled.
 - **Extras actions** adds the chat-level Toggle, Choose current greeting, Choose next greeting, Undo, and Force entries to Lumiverse's native **Extras** popover under the Waypoints extension heading.
 
 The two greeting-choice actions open a full-size picker: choose from the available greetings, inspect a large scrollable preview, then confirm with **Use current greeting** or **Use next greeting**. In solo chats, next-greeting choices stay later in the active character's greeting sequence. In group chats, next-greeting choices include every member's greeting except the current one.

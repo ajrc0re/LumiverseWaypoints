@@ -31,6 +31,7 @@ function status(chatId: string | null): WaypointsView {
       }] : [],
       prompt: { ready: false, content: "", characterId: chatId ? characterId : null, position: null, reason: "No narrative overview has been saved for this character." },
     },
+    reminderHidden: false,
     diagnostics: [],
   };
 }
@@ -321,155 +322,220 @@ describe("frontend character switching", () => {
     await host.finishRefreshes();
   });
 
-  test("offers five seconds on an existing chat and dismisses immediately after No", async () => {
-    host = new FrontendHost();
-    await host.finishRefreshes();
-    expect(host.reminder).toBeUndefined();
-    host.switchTo("chat-b", "b");
-    await host.finishRefreshes();
-    expect(host.reminder?.textContent).toContain("5s");
-    expect(host.reminder?.textContent).toContain("Waypoints is active");
-    host.button("No", host.reminder!).click();
-    expect(host.reminder).toBeUndefined();
-    expect(host.request("set-chat-enabled").input).toEqual({ chatId: "chat-b", enabled: false });
-    host.reply(host.request("set-chat-enabled"));
-    await host.finishRefreshes();
-    await Bun.sleep(70);
-    expect(host.requests.filter((request) => request.action === "set-chat-enabled")).toHaveLength(1);
-  });
-
-  test("gives a newly created chat ten seconds, counts down, and applies the configured timeout answer", async () => {
-    host = new FrontendHost();
-    await host.finishRefreshes();
+  /** Runs a test against a controllable clock; the reminder ticks every 50 ms of real time. */
+  async function withClock(run: (advance: (ms: number) => Promise<void>) => Promise<void>): Promise<void> {
     const originalNow = Date.now;
     let now = originalNow();
     Date.now = () => now;
     try {
-      host.events.get("CHAT_CREATED")?.({ id: "chat-b" });
-      host.switchTo("chat-b", "b");
-      const refresh = host.request("refresh");
-      const next = status("chat-b");
-      next.settings.reminderTimeoutAction = "no";
-      host.reply(refresh, next);
-      await flush();
-      expect(host.reminder?.textContent).toContain("10s");
-      const progress = host.reminder!.querySelector<HTMLElement>(".wp-reminder-progress")!;
-      now += 4_000;
-      await Bun.sleep(70);
-      expect(host.reminder?.textContent).toContain("6s");
-      expect(progress.style.transform).toBe("scaleX(0.6)");
-      now += 6_000;
-      await Bun.sleep(70);
-      expect(host.reminder).toBeUndefined();
-      expect(host.request("set-chat-enabled").input).toEqual({ chatId: "chat-b", enabled: false });
-      host.reply(host.request("set-chat-enabled"));
-      await host.finishRefreshes();
+      await run(async (ms) => {
+        now += ms;
+        await Bun.sleep(70);
+      });
     } finally {
       Date.now = originalNow;
     }
-  });
+  }
 
-  test("defaults to Yes at timeout and respects the reminder setting", async () => {
+  async function openChat(chatId: string, change: (view: WaypointsView) => void = () => {}): Promise<void> {
+    host!.switchTo(chatId, chatId.replace("chat-", ""));
+    const next = status(chatId);
+    change(next);
+    host!.reply(host!.request("refresh"), next);
+    await flush();
+  }
+
+  const card = () => host!.reminder!.querySelector<HTMLElement>(".wp-reminder-card")!;
+
+  test("waits for the delay, announces an enabled chat, then fades out and closes", async () => {
     host = new FrontendHost();
     await host.finishRefreshes();
-    const originalNow = Date.now;
-    let now = originalNow();
-    Date.now = () => now;
-    try {
-      host.switchTo("chat-b", "b");
-      await host.finishRefreshes();
-      now += 5_000;
-      await Bun.sleep(70);
-      expect(host.reminder).toBeUndefined();
-      expect(host.request("set-chat-enabled").input).toEqual({ chatId: "chat-b", enabled: true });
-      host.reply(host.request("set-chat-enabled"));
-      await host.finishRefreshes();
-      host.switchTo("chat-a", "a");
-      const refresh = host.request("refresh");
-      const next = status("chat-a");
-      next.settings.reminderToast = false;
-      host.reply(refresh, next);
+    await withClock(async (advance) => {
+      await openChat("chat-b");
       await flush();
-      expect(host.reminder).toBeUndefined();
-    } finally {
-      Date.now = originalNow;
-    }
+      // One-second delay by default.
+      expect(host!.reminder).toBeUndefined();
+      await advance(1_000);
+      expect(host!.reminder?.textContent).toContain("Waypoints is ENABLED for this chat!");
+      expect(host!.reminder?.textContent).toContain("click here to DISABLE");
+      expect(host!.reminder?.textContent).toContain("Never remind me for this chat");
+      expect(card().classList.contains("on")).toBe(true);
+      const progress = host!.reminder!.querySelector<HTMLElement>(".wp-reminder-progress")!;
+      await advance(2_500);
+      expect(progress.style.transform).toBe("scaleX(0.5)");
+      // Five seconds on screen, then a five-second fade.
+      await advance(5_000);
+      expect(host!.reminder?.style.opacity).toBe("0.5");
+      await advance(2_500);
+      expect(host!.reminder).toBeUndefined();
+    });
+    expect(host.requests.some((request) => request.action === "set-chat-enabled" || request.action === "set-reminder-hidden")).toBe(false);
   });
 
-  test("cancels the old reminder on chat switch and never applies its answer to another chat", async () => {
+  test("clicking the reminder flips the chat and rewords it", async () => {
     host = new FrontendHost();
     await host.finishRefreshes();
-    host.switchTo("chat-b", "b");
-    await host.finishRefreshes();
-    const oldYes = host.button("Yes", host.reminder!);
-    host.switchTo("chat-a", "a");
-    expect(host.reminder).toBeUndefined();
-    oldYes.click();
-    expect(host.requests.some((request) => request.action === "set-chat-enabled")).toBe(false);
-    await host.finishRefreshes();
-    expect(host.reminder?.textContent).toContain("5s");
-  });
-
-  test("never re-asks or re-enables a chat that answered No, even mid-timer", async () => {
-    host = new FrontendHost();
-    await host.finishRefreshes();
-    // Chat B answers No and the backend reports it disabled from then on.
-    host.switchTo("chat-b", "b");
-    await host.finishRefreshes();
-    host.button("No", host.reminder!).click();
-    expect(host.request("set-chat-enabled").input).toEqual({ chatId: "chat-b", enabled: false });
-    host.reply(host.request("set-chat-enabled"));
-    const disabled = status("chat-b");
-    disabled.chatEnabled = false;
-    host.reply(host.request("refresh"), disabled);
-    await host.finishRefreshes();
-    // Switching away starts chat A's reminder; switching back to disabled chat B
-    // while that timer still runs must not show a reminder or re-enable B.
-    host.switchTo("chat-a", "a");
-    await host.finishRefreshes();
-    expect(host.reminder?.textContent).toContain("Waypoints is active");
-    host.switchTo("chat-b", "b");
-    for (const request of host.requests.filter((request) => request.action === "refresh" && !host!.answered.has(request.requestId))) {
+    await withClock(async (advance) => {
+      await openChat("chat-b");
+      await advance(1_000);
+      await advance(4_000);
+      card().click();
+      expect(host!.request("set-chat-enabled").input).toEqual({ chatId: "chat-b", enabled: false });
       const off = status("chat-b");
       off.chatEnabled = false;
-      host.reply(request, off);
-    }
-    await flush();
-    await Bun.sleep(70);
-    expect(host.reminder).toBeUndefined();
-    expect(host.requests.filter((request) => request.action === "set-chat-enabled")).toHaveLength(1);
+      host!.reply(host!.request("set-chat-enabled"), off);
+      await flush();
+      for (const request of host!.requests.filter((request) => request.action === "refresh" && !host!.answered.has(request.requestId))) host!.reply(request, off);
+      await flush();
+      expect(host!.reminder?.textContent).toContain("Waypoints is DISABLED for this chat!");
+      expect(host!.reminder?.textContent).toContain("click here to ENABLE");
+      expect(card().classList.contains("off")).toBe(true);
+      // The new state gets a full duration on screen.
+      await advance(4_000);
+      expect(host!.reminder).toBeDefined();
+      expect(host!.reminder?.style.opacity).toBe("");
+    });
   });
 
-  test("does not ask in a chat with no alternate greetings", async () => {
+  test("the Never remind me box hides a chat only when the reminder times out with it ticked", async () => {
     host = new FrontendHost();
     await host.finishRefreshes();
-    host.switchTo("chat-b", "b");
-    const refresh = host.request("refresh");
-    const single = status("chat-b");
-    single.greetings = single.greetings.slice(0, 1);
-    single.chatEnabled = false;
-    single.upcoming = null;
-    single.status = "This chat has no alternate greetings, so Waypoints stays off.";
-    host.reply(refresh, single);
-    await flush();
-    await Bun.sleep(70);
-    expect(host.reminder).toBeUndefined();
-    expect(host.requests.some((request) => request.action === "set-chat-enabled")).toBe(false);
-    host.switchTo("chat-a", "a");
+    await withClock(async (advance) => {
+      await openChat("chat-b");
+      await advance(1_000);
+      const box = host!.reminder!.querySelector<HTMLInputElement>(".wp-reminder-never input")!;
+      box.click();
+      expect(box.checked).toBe(true);
+      // Ticking the box is not a click on the reminder.
+      expect(host!.requests.some((request) => request.action === "set-chat-enabled")).toBe(false);
+      // Switching chats before the timeout does not count.
+      await openChat("chat-a");
+      expect(host!.reminder).toBeUndefined();
+      await flush();
+      await advance(1_000);
+      host!.reminder!.querySelector<HTMLInputElement>(".wp-reminder-never input")!.click();
+      await advance(10_000);
+      expect(host!.reminder).toBeUndefined();
+      expect(host!.request("set-reminder-hidden").input).toEqual({ chatId: "chat-a", hidden: true });
+      expect(host!.requests.filter((request) => request.action === "set-reminder-hidden")).toHaveLength(1);
+      host!.reply(host!.request("set-reminder-hidden"), { hidden: true });
+
+      await openChat("chat-b");
+      await flush();
+      await advance(1_000);
+      expect(host!.reminder).toBeDefined();
+      await openChat("chat-a", (view) => { view.reminderHidden = true; });
+      await flush();
+      await advance(1_000);
+      expect(host!.reminder).toBeUndefined();
+    });
+  });
+
+  test("shows on enabled, disabled, or all chats as configured", async () => {
+    host = new FrontendHost();
     await host.finishRefreshes();
-    expect(host.reminder?.textContent).toContain("Waypoints is active");
+    await withClock(async (advance) => {
+      const visit = async (chatId: string, showOn: WaypointsView["settings"]["reminderShowOn"], enabled: boolean) => {
+        await openChat(chatId, (view) => {
+          view.chatEnabled = enabled;
+          view.settings.reminderShowOn = showOn;
+        });
+        await flush();
+        await advance(1_000);
+        return host!.reminder?.textContent ?? null;
+      };
+      expect(await visit("chat-b", "enabled", false)).toBeNull();
+      expect(await visit("chat-a", "disabled", true)).toBeNull();
+      expect(await visit("chat-b", "disabled", false)).toContain("Waypoints is DISABLED for this chat!");
+      expect(await visit("chat-a", "all", true)).toContain("ENABLED");
+      expect(await visit("chat-b", "all", false)).toContain("DISABLED");
+    });
+  });
+
+  test("without click, never-remind, delay, or fade options the reminder is plain and closes on time", async () => {
+    host = new FrontendHost();
+    await host.finishRefreshes();
+    await withClock(async (advance) => {
+      await openChat("chat-b", (view) => {
+        Object.assign(view.settings, { reminderClickToggle: false, reminderNeverAgain: false, reminderDelay: false, reminderFadeOut: false, reminderDurationSeconds: 2 });
+      });
+      await flush();
+      expect(host!.reminder?.textContent).toBe("Waypoints is ENABLED for this chat!" + host!.reminder!.querySelector(".wp-reminder-hint")!.textContent);
+      expect(host!.reminder!.querySelector<HTMLElement>(".wp-reminder-hint")!.hidden).toBe(true);
+      expect(host!.reminder!.querySelector(".wp-reminder-never")).toBeNull();
+      card().click();
+      expect(host!.requests.some((request) => request.action === "set-chat-enabled")).toBe(false);
+      await advance(1_900);
+      expect(host!.reminder).toBeDefined();
+      await advance(200);
+      expect(host!.reminder).toBeUndefined();
+    });
+  });
+
+  test("respects the reminder setting and cancels a pending reminder on chat switch", async () => {
+    host = new FrontendHost();
+    await host.finishRefreshes();
+    await withClock(async (advance) => {
+      await openChat("chat-b", (view) => { view.settings.reminderToast = false; });
+      await flush();
+      await advance(1_000);
+      expect(host!.reminder).toBeUndefined();
+      // A switch during the delay cancels the old chat's reminder.
+      await openChat("chat-a");
+      await flush();
+      await openChat("chat-b");
+      await flush();
+      await advance(1_000);
+      const old = card();
+      await openChat("chat-a");
+      expect(host!.reminder).toBeUndefined();
+      old.click();
+      expect(host!.requests.some((request) => request.action === "set-chat-enabled")).toBe(false);
+    });
+  });
+
+  test("does not remind in a chat with no alternate greetings", async () => {
+    host = new FrontendHost();
+    await host.finishRefreshes();
+    await withClock(async (advance) => {
+      await openChat("chat-b", (view) => {
+        view.greetings = view.greetings.slice(0, 1);
+        view.chatEnabled = false;
+        view.upcoming = null;
+        view.settings.reminderShowOn = "all";
+      });
+      await flush();
+      await advance(1_000);
+      expect(host!.reminder).toBeUndefined();
+    });
   });
 
   test("restores the dragged reminder position on the next chat", async () => {
     host = new FrontendHost();
     await host.finishRefreshes();
-    host.switchTo("chat-b", "b");
+    await withClock(async (advance) => {
+      await openChat("chat-b");
+      await advance(1_000);
+      expect(host!.reminderGeometryKey).toBe("chat-reminder-bar");
+      host!.reminderHandle!.moveTo(192, 224);
+      await openChat("chat-a");
+      await advance(1_000);
+      expect(host!.reminderHandle?.getPosition()).toEqual({ x: 192, y: 224 });
+    });
+  });
+
+  test("tints the compass button by the chat's state when enabled", async () => {
+    host = new FrontendHost();
     await host.finishRefreshes();
-    expect(host.reminderGeometryKey).toBe("chat-reminder");
-    host.reminderHandle!.moveTo(192, 224);
-    host.switchTo("chat-a", "a");
-    await host.finishRefreshes();
-    expect(host.reminderHandle?.getPosition()).toEqual({ x: 192, y: 224 });
+    const compass = host.actionBar.querySelector("button")!;
+    expect(compass.classList.contains("wp-status-on")).toBe(true);
+    await openChat("chat-b", (view) => { view.chatEnabled = false; });
+    await flush();
+    expect(compass.classList.contains("wp-status-off")).toBe(true);
+    expect(compass.classList.contains("wp-status-on")).toBe(false);
+    await openChat("chat-a", (view) => { view.settings.actionBarStatusColor = false; });
+    await flush();
+    expect(compass.classList.contains("wp-status-on") || compass.classList.contains("wp-status-off")).toBe(false);
   });
 
   test("a switch during startup loads immediately and ignores a late reply from the previous chat", async () => {
@@ -718,7 +784,7 @@ describe("frontend storyline designer", () => {
 
     // The Settings draft follows, so saving settings later keeps the choice.
     host.button("Settings").click();
-    host.button("Save settings").click();
+    host.button("Save changes").click();
     await flush();
     expect(host.request("save-settings").input.settings).toMatchObject({ storylineConnectionId: "fast", storylineModel: "small-2" });
   });
@@ -743,3 +809,49 @@ describe("frontend storyline designer", () => {
   });
 });
 
+describe("frontend Prompts and Settings tabs", () => {
+  test("prompts live on their own tab and share one draft with Settings", async () => {
+    host = new FrontendHost();
+    await host.finishRefreshes();
+    host.button("Prompts").click();
+    const template = host.drawer.querySelector<HTMLTextAreaElement>("[aria-label='Scene-shaping template']")!;
+    expect(host.drawer.querySelector("[aria-label='Overview generator instructions']")).not.toBeNull();
+    template.value = DEFAULT_SETTINGS.promptTemplate + "\nExtra";
+    template.oninput?.(new host.dom.window.Event("input"));
+
+    host.button("Settings").click();
+    expect(host.drawer.querySelector("[aria-label='Scene-shaping template']")).toBeNull();
+    const startState = [...host.drawer.querySelectorAll("select")].find((node) => [...node.options].some((option) => option.textContent === "Waypoints OFF for new chats"))!;
+    startState.value = "off";
+    startState.dispatchEvent(new host.dom.window.Event("change"));
+
+    // Resetting settings leaves the prompt edit alone.
+    host.button("Reset settings to defaults").click();
+    host.button("Prompts").click();
+    expect(host.drawer.querySelector<HTMLTextAreaElement>("[aria-label='Scene-shaping template']")!.value).toEndWith("Extra");
+    host.button("Settings").click();
+    const again = [...host.drawer.querySelectorAll("select")].find((node) => [...node.options].some((option) => option.textContent === "Waypoints OFF for new chats"))!;
+    expect(again.value).toBe("on");
+    again.value = "off";
+    again.dispatchEvent(new host.dom.window.Event("change"));
+    host.button("Save changes").click();
+    await flush();
+    expect(host.request("save-settings").input.settings).toMatchObject({ newChatsEnabled: false, promptTemplate: DEFAULT_SETTINGS.promptTemplate + "\nExtra" });
+  });
+
+  test("child options show only while their parent option is on", async () => {
+    host = new FrontendHost();
+    await host.finishRefreshes();
+    host.button("Settings").click();
+    const box = (label: string) => host!.drawer.querySelector<HTMLInputElement>("[aria-label='" + label + "']")!;
+    const shown = (label: string) => !box(label).closest(".wp-suboptions[hidden]");
+    expect(shown("Fade out?")).toBe(true);
+    expect(shown("Color the button by chat state")).toBe(true);
+    box("Fade out?").click();
+    expect(box("Fade out?").closest(".wp-suboptions")!.querySelector(".wp-suboptions")!.hasAttribute("hidden")).toBe(true);
+    box("Show a reminder when a chat opens").click();
+    expect(shown("Fade out?")).toBe(false);
+    box("Show the compass button in the chat action bar").click();
+    expect(shown("Color the button by chat state")).toBe(false);
+  });
+});

@@ -163,9 +163,18 @@ var DEFAULT_SETTINGS = {
   diagnosticLogging: true,
   diagnosticLineLimit: 96,
   floatingControls: true,
+  newChatsEnabled: true,
   reminderToast: true,
-  reminderTimeoutAction: "yes",
+  reminderShowOn: "enabled",
+  reminderClickToggle: true,
+  reminderNeverAgain: true,
+  reminderDurationSeconds: 5,
+  reminderFadeOut: true,
+  reminderFadeSeconds: 5,
+  reminderDelay: true,
+  reminderDelaySeconds: 1,
   actionBarButton: true,
+  actionBarStatusColor: true,
   extrasActions: true,
   storylineTemplate: DEFAULT_STORYLINE_TEMPLATE,
   storylineGeneratorTemplate: DEFAULT_STORYLINE_GENERATOR_TEMPLATE,
@@ -233,14 +242,28 @@ function readRole(input, issues) {
   }
   return value;
 }
-function readReminderTimeoutAction(input, issues) {
-  const value = input.reminderTimeoutAction;
+function readSeconds(input, field, fallback, min, max, issues) {
+  const value = input[field];
   if (value === undefined)
-    return DEFAULT_SETTINGS.reminderTimeoutAction;
-  if (value === "yes" || value === "no")
+    return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
+    issues.push({
+      field,
+      message: String(field) + " must be a number of seconds from " + String(min) + " to " + String(max) + "."
+    });
+    return fallback;
+  }
+  return Math.round(value * 10) / 10;
+}
+var REMINDER_SHOW_ON = new Set(["enabled", "disabled", "all"]);
+function readReminderShowOn(input, issues) {
+  const value = input.reminderShowOn;
+  if (value === undefined)
+    return DEFAULT_SETTINGS.reminderShowOn;
+  if (typeof value === "string" && REMINDER_SHOW_ON.has(value))
     return value;
-  issues.push({ field: "reminderTimeoutAction", message: "Reminder timeout action must be Yes or No." });
-  return DEFAULT_SETTINGS.reminderTimeoutAction;
+  issues.push({ field: "reminderShowOn", message: "Show the reminder on must be enabled chats, disabled chats, or all chats." });
+  return DEFAULT_SETTINGS.reminderShowOn;
 }
 function validateTagName(value) {
   return TAG_NAME.test(value);
@@ -359,9 +382,18 @@ function validateSettings(input) {
     diagnosticLogging: readBoolean(source, "diagnosticLogging", DEFAULT_SETTINGS.diagnosticLogging, issues),
     diagnosticLineLimit: readInteger(source, "diagnosticLineLimit", DEFAULT_SETTINGS.diagnosticLineLimit, 10, 500, issues),
     floatingControls: readBoolean(source, "floatingControls", DEFAULT_SETTINGS.floatingControls, issues),
+    newChatsEnabled: readBoolean(source, "newChatsEnabled", DEFAULT_SETTINGS.newChatsEnabled, issues),
     reminderToast: readBoolean(source, "reminderToast", DEFAULT_SETTINGS.reminderToast, issues),
-    reminderTimeoutAction: readReminderTimeoutAction(source, issues),
+    reminderShowOn: readReminderShowOn(source, issues),
+    reminderClickToggle: readBoolean(source, "reminderClickToggle", DEFAULT_SETTINGS.reminderClickToggle, issues),
+    reminderNeverAgain: readBoolean(source, "reminderNeverAgain", DEFAULT_SETTINGS.reminderNeverAgain, issues),
+    reminderDurationSeconds: readSeconds(source, "reminderDurationSeconds", DEFAULT_SETTINGS.reminderDurationSeconds, 0.5, 300, issues),
+    reminderFadeOut: readBoolean(source, "reminderFadeOut", DEFAULT_SETTINGS.reminderFadeOut, issues),
+    reminderFadeSeconds: readSeconds(source, "reminderFadeSeconds", DEFAULT_SETTINGS.reminderFadeSeconds, 0, 60, issues),
+    reminderDelay: readBoolean(source, "reminderDelay", DEFAULT_SETTINGS.reminderDelay, issues),
+    reminderDelaySeconds: readSeconds(source, "reminderDelaySeconds", DEFAULT_SETTINGS.reminderDelaySeconds, 0, 60, issues),
     actionBarButton: readBoolean(source, "actionBarButton", DEFAULT_SETTINGS.actionBarButton, issues),
+    actionBarStatusColor: readBoolean(source, "actionBarStatusColor", DEFAULT_SETTINGS.actionBarStatusColor, issues),
     extrasActions: readBoolean(source, "extrasActions", DEFAULT_SETTINGS.extrasActions, issues),
     storylineTemplate: readString(source, "storylineTemplate", DEFAULT_SETTINGS.storylineTemplate, 16000, issues),
     storylineGeneratorTemplate: readString(source, "storylineGeneratorTemplate", DEFAULT_SETTINGS.storylineGeneratorTemplate, 16000, issues),
@@ -506,6 +538,7 @@ var SETTINGS_PATH = "settings.json";
 var HANDOFF_EXTRA_KEY = "lumiverse_waypoints.handoff";
 var INSERTED_GREETING_METADATA_KEY = "lumiverse_waypoints";
 var STORYLINE_PATH_PREFIX = "storylines/";
+var REMINDER_HIDDEN_PATH = "reminder-hidden.json";
 
 // src/storyline.ts
 var STORYLINE_NOTES_LIMIT = 8000;
@@ -961,6 +994,7 @@ function consumePendingHandoff(state, eventKey) {
 var AUTOMATIC_PERMISSIONS = ["characters", "chats", "chat_mutation", "generation"];
 var CONTEXT_PERMISSIONS = ["characters", "chats"];
 var STORYLINE_GENERATION_PERMISSIONS = ["characters", "chats", "generation"];
+var REMINDER_HIDDEN_LIMIT = 5000;
 function emptyLoomValues() {
   return {
     active: false,
@@ -1052,6 +1086,7 @@ class WaypointEngine {
   diagnosticsLines = [];
   storylineCache = new Map;
   generations = new Map;
+  reminderHiddenCache = null;
   constructor(api, userId, settingsChanged) {
     this.api = api;
     this.userId = userId;
@@ -1088,8 +1123,11 @@ class WaypointEngine {
   }
   async saveSettings(draft) {
     const validated = validateSettings(draft);
+    const previous = await this.settings();
     await this.api.userStorage.setJson(SETTINGS_PATH, validated.settings, { userId: this.userId });
     this.settingsCache = clone(validated.settings);
+    if (previous.reminderNeverAgain && !validated.settings.reminderNeverAgain)
+      await this.clearReminderHidden();
     if (this.settingsChanged)
       await this.settingsChanged(clone(validated.settings), this.userId);
     this.note("settings saved");
@@ -1102,6 +1140,33 @@ class WaypointEngine {
       storylineConnectionId: typeof input.connectionId === "string" ? input.connectionId : settings.storylineConnectionId,
       storylineModel: typeof input.model === "string" ? input.model : settings.storylineModel
     });
+  }
+  async reminderHiddenChats() {
+    if (!this.reminderHiddenCache) {
+      let stored = null;
+      try {
+        stored = await this.api.userStorage.getJson(REMINDER_HIDDEN_PATH, { fallback: null, userId: this.userId });
+      } catch {
+        stored = null;
+      }
+      const ids = isRecord(stored) && Array.isArray(stored.chatIds) ? stored.chatIds : [];
+      this.reminderHiddenCache = [...new Set(ids.filter((id) => typeof id === "string" && id.length > 0))];
+    }
+    return [...this.reminderHiddenCache];
+  }
+  async writeReminderHidden(chatIds) {
+    const kept = chatIds.slice(-REMINDER_HIDDEN_LIMIT);
+    await this.api.userStorage.setJson(REMINDER_HIDDEN_PATH, { version: 1, chatIds: kept }, { userId: this.userId });
+    this.reminderHiddenCache = kept;
+  }
+  async setReminderHidden(chatId, hidden) {
+    const current = (await this.reminderHiddenChats()).filter((id) => id !== chatId);
+    await this.writeReminderHidden(hidden ? [...current, chatId] : current);
+    this.note("chat " + chatId + " reminder " + (hidden ? "hidden" : "shown"));
+  }
+  async clearReminderHidden() {
+    await this.writeReminderHidden([]);
+    this.note("reminder shown for all chats again");
   }
   async resetSettings() {
     return this.saveSettings(clone(DEFAULT_SETTINGS));
@@ -1179,11 +1244,20 @@ class WaypointEngine {
     return Array.isArray(character?.alternate_greetings) ? character.alternate_greetings.map((message) => typeof message === "string" ? message : "") : [];
   }
   async state(chatId) {
+    return (await this.storedState(chatId)).state;
+  }
+  async storedState(chatId) {
+    let stored;
     try {
-      return parseChatState(await this.api.variables.chat.get(chatId, CHAT_STATE_KEY));
+      stored = await this.api.variables.chat.get(chatId, CHAT_STATE_KEY);
     } catch {
-      return parseChatState(null);
+      return { state: parseChatState(null), fresh: false };
     }
+    if (stored)
+      return { state: parseChatState(stored), fresh: false };
+    const state = emptyChatState();
+    state.chatEnabled = (await this.settings()).newChatsEnabled;
+    return { state, fresh: true };
   }
   async persistState(chatId, state) {
     await this.api.variables.chat.set(chatId, CHAT_STATE_KEY, serializeChatState(state));
@@ -1936,6 +2010,7 @@ class WaypointEngine {
       },
       routes: {},
       storyline: emptyStorylineView(reason),
+      reminderHidden: false,
       diagnostics: this.diagnostics()
     };
   }
@@ -1952,8 +2027,15 @@ class WaypointEngine {
     }
     return this.serial(resolvedChatId, async () => {
       const context = await this.context(resolvedChatId);
-      const state = reconcileChatState(await this.state(resolvedChatId), context);
+      const stored = await this.storedState(resolvedChatId);
+      const state = reconcileChatState(stored.state, context);
       await this.reconcileJournalLocked(resolvedChatId, state, context, settings);
+      if (stored.fresh && context.greetings.length > 1) {
+        await this.persistState(resolvedChatId, state).catch((error) => {
+          this.warn("could not save the starting state for chat " + resolvedChatId + ": " + (error instanceof Error ? error.message : String(error)));
+        });
+        this.note("chat " + resolvedChatId + " opened for the first time; Waypoints " + (state.chatEnabled ? "on" : "off"));
+      }
       const prompt = this.promptStatus(context, state, settings);
       const active = greetingForSelection(context.greetings, state.active);
       const upcoming = greetingForSelection(context.greetings, state.upcoming);
@@ -1980,6 +2062,7 @@ class WaypointEngine {
         prompt,
         routes: chatRoutes(context, state),
         storyline: this.storylineView(context, state, settings),
+        reminderHidden: settings.reminderNeverAgain && (await this.reminderHiddenChats()).includes(resolvedChatId),
         diagnostics: this.diagnostics()
       };
     });
@@ -2291,6 +2374,12 @@ async function handleRequest(raw, userId) {
         break;
       case "set-storyline-generator":
         result = await current.setStorylineGenerator({ connectionId: input.connectionId, model: input.model });
+        break;
+      case "set-reminder-hidden":
+        if (!selectedChatId || typeof input.hidden !== "boolean")
+          throw new Error("Choose a chat and whether to hide its reminder.");
+        await current.setReminderHidden(selectedChatId, input.hidden);
+        result = { hidden: input.hidden };
         break;
       case "list-connections":
         result = await current.listConnections();
