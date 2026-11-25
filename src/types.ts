@@ -41,6 +41,8 @@ export interface WaypointSettings {
   storylineWaypointCharLimit: number;
   /** Connection profile used for overview generation; empty uses the default connection. */
   storylineConnectionId: string;
+  /** Model name sent with overview generation; empty uses the connection's own model. */
+  storylineModel: string;
 }
 
 export interface GreetingSelection {

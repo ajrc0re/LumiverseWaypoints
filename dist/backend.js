@@ -171,7 +171,8 @@ var DEFAULT_SETTINGS = {
   storylineGeneratorTemplate: DEFAULT_STORYLINE_GENERATOR_TEMPLATE,
   storylineInsertionDepth: 0,
   storylineWaypointCharLimit: 4000,
-  storylineConnectionId: ""
+  storylineConnectionId: "",
+  storylineModel: ""
 };
 
 class SettingsValidationError extends Error {
@@ -366,7 +367,8 @@ function validateSettings(input) {
     storylineGeneratorTemplate: readString(source, "storylineGeneratorTemplate", DEFAULT_SETTINGS.storylineGeneratorTemplate, 16000, issues),
     storylineInsertionDepth: readInteger(source, "storylineInsertionDepth", DEFAULT_SETTINGS.storylineInsertionDepth, 0, 9999, issues),
     storylineWaypointCharLimit: readInteger(source, "storylineWaypointCharLimit", DEFAULT_SETTINGS.storylineWaypointCharLimit, 100, 1e5, issues),
-    storylineConnectionId: readString(source, "storylineConnectionId", DEFAULT_SETTINGS.storylineConnectionId, 256, issues)
+    storylineConnectionId: readString(source, "storylineConnectionId", DEFAULT_SETTINGS.storylineConnectionId, 256, issues).trim(),
+    storylineModel: readString(source, "storylineModel", DEFAULT_SETTINGS.storylineModel, 256, issues).trim()
   };
   if (!settings.promptTemplate.includes("{{scene_excerpt}}")) {
     issues.push({ field: "template", message: "Prompt template must include {{scene_excerpt}}." });
@@ -1093,6 +1095,14 @@ class WaypointEngine {
     this.note("settings saved");
     return { settings: clone(validated.settings), warnings: validated.warnings };
   }
+  async setStorylineGenerator(input) {
+    const settings = await this.settings();
+    return this.saveSettings({
+      ...settings,
+      storylineConnectionId: typeof input.connectionId === "string" ? input.connectionId : settings.storylineConnectionId,
+      storylineModel: typeof input.model === "string" ? input.model : settings.storylineModel
+    });
+  }
   async resetSettings() {
     return this.saveSettings(clone(DEFAULT_SETTINGS));
   }
@@ -1687,13 +1697,15 @@ class WaypointEngine {
     const prompt = finishResolvedGeneratorPrompt(await this.resolveMacros(renderGeneratorPrompt(settings, { character, route: greetings, notes, includePersona, includeCharacter }), chatId, characterId));
     const controller = new AbortController;
     this.generations.set(characterId, controller);
-    this.note("narrative overview generation started for " + characterId);
+    const model = settings.storylineModel;
+    this.note("narrative overview generation started for " + characterId + " (connection " + (settings.storylineConnectionId || "default") + ", model " + (model || "connection default") + ")");
     let overview;
     try {
       const result = await this.api.generate.quiet({
         type: "quiet",
         messages: [{ role: "user", content: prompt }],
         ...settings.storylineConnectionId ? { connection_id: settings.storylineConnectionId } : {},
+        ...model ? { parameters: { model } } : {},
         ...this.userId ? { userId: this.userId } : {},
         signal: controller.signal
       });
@@ -2276,6 +2288,9 @@ async function handleRequest(raw, userId) {
       }
       case "cancel-storyline":
         result = { cancelled: current.cancelStorylineGeneration(requireCharacterId(input)) };
+        break;
+      case "set-storyline-generator":
+        result = await current.setStorylineGenerator({ connectionId: input.connectionId, model: input.model });
         break;
       case "list-connections":
         result = await current.listConnections();

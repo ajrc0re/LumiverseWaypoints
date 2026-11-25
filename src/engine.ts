@@ -250,6 +250,19 @@ export class WaypointEngine {
     return { settings: clone(validated.settings), warnings: validated.warnings };
   }
 
+  /**
+   * Saves the overview generator's connection and model override on their
+   * own, so the Storyline tab can change them without touching other settings.
+   */
+  async setStorylineGenerator(input: { connectionId?: unknown; model?: unknown }): Promise<{ settings: WaypointSettings; warnings: string[] }> {
+    const settings = await this.settings();
+    return this.saveSettings({
+      ...settings,
+      storylineConnectionId: typeof input.connectionId === "string" ? input.connectionId : settings.storylineConnectionId,
+      storylineModel: typeof input.model === "string" ? input.model : settings.storylineModel,
+    });
+  }
+
   async resetSettings(): Promise<{ settings: WaypointSettings; warnings: string[] }> {
     return this.saveSettings(clone(DEFAULT_SETTINGS));
   }
@@ -951,13 +964,17 @@ export class WaypointEngine {
 
     const controller = new AbortController();
     this.generations.set(characterId, controller);
-    this.note("narrative overview generation started for " + characterId);
+    const model = settings.storylineModel;
+    this.note("narrative overview generation started for " + characterId
+      + " (connection " + (settings.storylineConnectionId || "default") + ", model " + (model || "connection default") + ")");
     let overview: string;
     try {
       const result = await this.api.generate.quiet({
         type: "quiet",
         messages: [{ role: "user", content: prompt }],
         ...(settings.storylineConnectionId ? { connection_id: settings.storylineConnectionId } : {}),
+        // Lumiverse reads parameters.model as a per-call override of the connection's model.
+        ...(model ? { parameters: { model } } : {}),
         ...(this.userId ? { userId: this.userId } : {}),
         signal: controller.signal,
       });

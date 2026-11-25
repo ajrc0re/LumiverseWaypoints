@@ -162,7 +162,8 @@ var DEFAULT_SETTINGS = {
   storylineGeneratorTemplate: DEFAULT_STORYLINE_GENERATOR_TEMPLATE,
   storylineInsertionDepth: 0,
   storylineWaypointCharLimit: 4000,
-  storylineConnectionId: ""
+  storylineConnectionId: "",
+  storylineModel: ""
 };
 
 class SettingsValidationError extends Error {
@@ -357,7 +358,8 @@ function validateSettings(input) {
     storylineGeneratorTemplate: readString(source, "storylineGeneratorTemplate", DEFAULT_SETTINGS.storylineGeneratorTemplate, 16000, issues),
     storylineInsertionDepth: readInteger(source, "storylineInsertionDepth", DEFAULT_SETTINGS.storylineInsertionDepth, 0, 9999, issues),
     storylineWaypointCharLimit: readInteger(source, "storylineWaypointCharLimit", DEFAULT_SETTINGS.storylineWaypointCharLimit, 100, 1e5, issues),
-    storylineConnectionId: readString(source, "storylineConnectionId", DEFAULT_SETTINGS.storylineConnectionId, 256, issues)
+    storylineConnectionId: readString(source, "storylineConnectionId", DEFAULT_SETTINGS.storylineConnectionId, 256, issues).trim(),
+    storylineModel: readString(source, "storylineModel", DEFAULT_SETTINGS.storylineModel, 256, issues).trim()
   };
   if (!settings.promptTemplate.includes("{{scene_excerpt}}")) {
     issues.push({ field: "template", message: "Prompt template must include {{scene_excerpt}}." });
@@ -648,6 +650,7 @@ function asConnections(value) {
     isDefault: entry.isDefault === true
   }] : []);
 }
+var GENERATOR_SAVE_DELAY_MS = 600;
 var GENERATION_TIMEOUT_MS = 10 * 60000;
 function compactPreview(value, limit = 580) {
   return value.length > limit ? value.slice(0, limit) + "…" : value;
@@ -709,6 +712,9 @@ function setup(ctx) {
   let generatingCharacterId = null;
   let connections;
   let connectionsLoading = false;
+  let generatorPending = null;
+  let generatorSaveTimer;
+  let generatorSaving = Promise.resolve(true);
   const pending = new Map;
   let componentHandles = [];
   const disposers = [];
@@ -921,8 +927,12 @@ function setup(ctx) {
   function addField(parent, label, help, mount) {
     const wrap = element("div", "wp-field");
     wrap.append(element("label", "wp-label", label));
-    if (help)
+    if (typeof help !== "string") {
+      help.classList.add("wp-help");
+      wrap.append(help);
+    } else if (help) {
       wrap.append(element("p", "wp-help", help));
+    }
     const target = element("div", "wp-native");
     wrap.append(target);
     parent.append(wrap);
@@ -1592,6 +1602,10 @@ function setup(ctx) {
     }
     const version = selectionVersion;
     const characterId = saved.characterId;
+    if (!await flushGeneratorSave())
+      return;
+    if (!isCurrentSelection(version) || busy || isStoryGenerating(saved))
+      return;
     generatingCharacterId = characterId;
     setNotice("");
     render();
@@ -1791,6 +1805,7 @@ function setup(ctx) {
         }
       }));
     }
+    renderStoryGenerator(section, generating);
     const generateRow = element("div", "wp-actions");
     if (generating) {
       generateRow.append(element("span", "wp-generating", "Generating the narrative overview…"));
@@ -1882,6 +1897,105 @@ function setup(ctx) {
     renderStoryChat(parent, saved);
     renderStoryOverview(parent, saved, draft, generating);
   }
+  function generatorChoice() {
+    return generatorPending ?? {
+      connectionId: view?.settings.storylineConnectionId ?? "",
+      model: view?.settings.storylineModel ?? ""
+    };
+  }
+  function queueGeneratorSave(next, delay) {
+    generatorPending = next;
+    clearTimeout(generatorSaveTimer);
+    generatorSaveTimer = setTimeout(() => void flushGeneratorSave(), delay);
+  }
+  function flushGeneratorSave() {
+    clearTimeout(generatorSaveTimer);
+    generatorSaveTimer = undefined;
+    const next = generatorPending;
+    if (!next)
+      return generatorSaving;
+    generatorSaving = generatorSaving.then(async () => {
+      try {
+        const result = safeRecord(await rpc("set-storyline-generator", { ...next }));
+        const saved = isRecord(result.settings) ? result.settings : null;
+        const connectionId = saved ? saved.storylineConnectionId : next.connectionId.trim();
+        const model = saved ? saved.storylineModel : next.model.trim();
+        if (view)
+          view.settings = { ...view.settings, storylineConnectionId: connectionId, storylineModel: model };
+        draft.storylineConnectionId = connectionId;
+        draft.storylineModel = model;
+        return true;
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : String(error), true);
+        render();
+        return false;
+      } finally {
+        if (generatorPending === next)
+          generatorPending = null;
+      }
+    });
+    return generatorSaving;
+  }
+  function renderStoryGenerator(parent, generating) {
+    if (!connections)
+      loadConnections();
+    const choice = generatorChoice();
+    const grid = element("div", "wp-grid");
+    parent.append(grid);
+    const connectionOptions = [{ value: "", label: "Default connection" }, ...(connections ?? []).map((connection) => ({
+      value: connection.id,
+      label: connection.name + (connection.model ? " — " + connection.model : "") + (connection.isDefault ? " (default)" : "")
+    }))];
+    if (choice.connectionId && !connectionOptions.some((option) => option.value === choice.connectionId)) {
+      connectionOptions.push({ value: choice.connectionId, label: connections ? "Unavailable connection" : "Loading connections…" });
+    }
+    addField(grid, "Generator connection", "Any Lumiverse connection profile. Use a cheaper or stronger model for overviews than for chat.", (target) => ctx.components.mountSelect(target, {
+      value: choice.connectionId,
+      options: connectionOptions,
+      disabled: generating,
+      onChange: (value) => {
+        queueGeneratorSave({ ...generatorChoice(), connectionId: value }, 0);
+        syncModelField();
+      }
+    }));
+    const effectiveConnection = () => {
+      const current = generatorChoice();
+      return current.connectionId ? connections?.find((entry) => entry.id === current.connectionId) : connections?.find((entry) => entry.isDefault);
+    };
+    const connectionRef = () => {
+      const id = generatorChoice().connectionId || effectiveConnection()?.id;
+      return id ? { kind: "llm", id } : { kind: "llm" };
+    };
+    const modelHint = element("p");
+    let combobox;
+    const syncModelField = () => {
+      const model = effectiveConnection()?.model;
+      modelHint.textContent = "Leave blank to use the connection's own model" + (model ? " (" + model + ")." : ".");
+      combobox?.update({ connection: connectionRef() });
+    };
+    const onModelChange = (value) => queueGeneratorSave({ ...generatorChoice(), model: value }, GENERATOR_SAVE_DELAY_MS);
+    addField(grid, "Model override", modelHint, (target) => {
+      if (typeof ctx.components.mountModelCombobox !== "function") {
+        return ctx.components.mountTextInput(target, {
+          value: choice.model,
+          placeholder: "Use connection default",
+          disabled: generating,
+          ariaLabel: "Generator model override",
+          onChange: onModelChange
+        });
+      }
+      combobox = ctx.components.mountModelCombobox(target, {
+        value: choice.model,
+        connection: connectionRef(),
+        placeholder: "Use connection default",
+        appearance: "standard",
+        disabled: generating,
+        onChange: onModelChange
+      });
+      return combobox;
+    });
+    syncModelField();
+  }
   async function loadConnections() {
     if (connections || connectionsLoading)
       return;
@@ -1893,7 +2007,7 @@ function setup(ctx) {
       connections = [];
     } finally {
       connectionsLoading = false;
-      if (isCurrentSelection(version) && page === "settings")
+      if (isCurrentSelection(version) && page === "storyline")
         render();
     }
   }
@@ -2036,23 +2150,7 @@ function setup(ctx) {
         updateDraftValidation(validation);
       }
     }));
-    if (!connections)
-      loadConnections();
-    const connectionOptions = [{ value: "", label: "Default connection" }, ...(connections ?? []).map((connection) => ({
-      value: connection.id,
-      label: connection.name + (connection.model ? " — " + connection.model : "") + (connection.isDefault ? " (default)" : "")
-    }))];
-    if (draft.storylineConnectionId && !connectionOptions.some((option) => option.value === draft.storylineConnectionId)) {
-      connectionOptions.push({ value: draft.storylineConnectionId, label: connections ? "Unavailable connection" : "Loading connections…" });
-    }
-    addField(storyGrid, "Generator connection", "Use a cheaper or stronger model for overviews than for chat.", (target) => ctx.components.mountSelect(target, {
-      value: draft.storylineConnectionId,
-      options: connectionOptions,
-      onChange: (value) => {
-        draft.storylineConnectionId = value;
-        updateDraftValidation(validation);
-      }
-    }));
+    settings.append(element("p", "wp-help", "The generator's connection and model are chosen in the Storyline tab, next to Generate overview."));
     settings.append(element("div", "wp-divider"));
     settings.append(element("h4", "", "Handoff"));
     const handoffGrid = element("div", "wp-grid");
@@ -2327,6 +2425,7 @@ function setup(ctx) {
   refresh();
   return () => {
     destroyed = true;
+    clearTimeout(generatorSaveTimer);
     clearComponents();
     for (const dispose of disposers)
       dispose();

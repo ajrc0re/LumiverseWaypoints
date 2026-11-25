@@ -164,6 +164,7 @@ export const DEFAULT_SETTINGS: WaypointSettings = {
   storylineInsertionDepth: 0,
   storylineWaypointCharLimit: 4000,
   storylineConnectionId: "",
+  storylineModel: "",
 };
 
 export class SettingsValidationError extends Error {
@@ -384,7 +385,8 @@ export function validateSettings(input: unknown): SettingsValidationResult {
     storylineGeneratorTemplate: readString(source, "storylineGeneratorTemplate", DEFAULT_SETTINGS.storylineGeneratorTemplate, 16_000, issues),
     storylineInsertionDepth: readInteger(source, "storylineInsertionDepth", DEFAULT_SETTINGS.storylineInsertionDepth, 0, 9999, issues),
     storylineWaypointCharLimit: readInteger(source, "storylineWaypointCharLimit", DEFAULT_SETTINGS.storylineWaypointCharLimit, 100, 100_000, issues),
-    storylineConnectionId: readString(source, "storylineConnectionId", DEFAULT_SETTINGS.storylineConnectionId, 256, issues),
+    storylineConnectionId: readString(source, "storylineConnectionId", DEFAULT_SETTINGS.storylineConnectionId, 256, issues).trim(),
+    storylineModel: readString(source, "storylineModel", DEFAULT_SETTINGS.storylineModel, 256, issues).trim(),
   };
 
   if (!settings.promptTemplate.includes("{{scene_excerpt}}")) {

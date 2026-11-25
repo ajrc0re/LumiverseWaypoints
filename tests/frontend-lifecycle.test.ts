@@ -58,6 +58,7 @@ class FrontendHost {
   stateListener?: () => void;
   backendListener?: (payload: unknown) => void;
   activate?: () => void;
+  readonly comboboxes: Array<{ input: HTMLInputElement; options: Record<string, unknown> }> = [];
   menuChoice?: (result: { selectedKey: string | null }) => void;
   modal?: HTMLElement;
   hud?: HTMLElement;
@@ -172,6 +173,37 @@ class FrontendHost {
           select.onchange = () => options.onChange(select.value);
           target.append(select);
           return { destroy: () => select.remove() };
+        },
+        mountTextInput: (target: HTMLElement, options: { value?: string; placeholder?: string; ariaLabel?: string; onChange?: (value: string) => void }) => {
+          const input = document.createElement("input");
+          input.value = options.value ?? "";
+          input.placeholder = options.placeholder ?? "";
+          if (options.ariaLabel) input.setAttribute("aria-label", options.ariaLabel);
+          input.oninput = () => options.onChange?.(input.value);
+          target.append(input);
+          return { destroy: () => input.remove() };
+        },
+        mountNumericInput: (target: HTMLElement, options: { value?: number | null; onChange?: (value: number | null) => void }) => {
+          const input = document.createElement("input");
+          input.type = "number";
+          input.value = options.value === null || options.value === undefined ? "" : String(options.value);
+          input.oninput = () => options.onChange?.(input.value === "" ? null : Number(input.value));
+          target.append(input);
+          return { destroy: () => input.remove() };
+        },
+        mountModelCombobox: (target: HTMLElement, options: Record<string, unknown> & { value?: string; placeholder?: string; onChange?: (value: string) => void }) => {
+          const input = document.createElement("input");
+          input.value = options.value ?? "";
+          input.placeholder = options.placeholder ?? "";
+          input.setAttribute("data-model-combobox", "");
+          input.oninput = () => options.onChange?.(input.value);
+          target.append(input);
+          const entry = { input, options: { ...options } };
+          this.comboboxes.push(entry);
+          return {
+            update: (patch: Record<string, unknown>) => { Object.assign(entry.options, patch); },
+            destroy: () => input.remove(),
+          };
         },
         mountTextArea: (target: HTMLElement, options: { value?: string; disabled?: boolean; ariaLabel?: string; onChange?: (value: string) => void }) => {
           const area = document.createElement("textarea");
@@ -639,6 +671,75 @@ describe("frontend storyline designer", () => {
     await host.finishRefreshes();
     expect(host.drawer.textContent).toContain("Narrative overview generation was cancelled.");
     expect(host.button("Generate overview").disabled).toBe(false);
+  });
+
+  test("picks a generator connection and model override, saving them before generating", async () => {
+    host = new FrontendHost();
+    host.reply(host.request("refresh"), { ...status("chat-a"), grantedPermissions: ["ui_panels", "generation"] });
+    await flush();
+    host.button("Storyline").click();
+    host.reply(host.request("list-connections"), [
+      { id: "fast", name: "Fast", model: "small", isDefault: false },
+      { id: "main", name: "Main", model: "big", isDefault: true },
+    ]);
+    await flush();
+
+    // Blank means the connection's own model; the default connection is the one in play.
+    let model = host.comboboxes.at(-1)!;
+    expect(model.input.placeholder).toBe("Use connection default");
+    expect(model.options.connection).toEqual({ kind: "llm", id: "main" });
+    expect(host.drawer.textContent).toContain("Leave blank to use the connection's own model (big).");
+
+    const select = [...host.drawer.querySelectorAll("select")].find((node) => [...node.options].some((option) => option.value === "fast"))!;
+    expect([...select.options].map((option) => option.textContent)).toEqual(["Default connection", "Fast — small", "Main — big (default)"]);
+    select.value = "fast";
+    select.dispatchEvent(new host.dom.window.Event("change"));
+    expect(model.options.connection).toEqual({ kind: "llm", id: "fast" });
+    expect(host.drawer.textContent).toContain("own model (small).");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const connectionSave = host.request("set-storyline-generator");
+    expect(connectionSave.input).toEqual({ connectionId: "fast", model: "" });
+    host.reply(connectionSave, { settings: { ...DEFAULT_SETTINGS, storylineConnectionId: "fast" }, warnings: [] });
+    await flush();
+
+    model = host.comboboxes.at(-1)!;
+    model.input.value = "small-2";
+    model.input.dispatchEvent(new host.dom.window.Event("input"));
+    host.button("Generate overview").click();
+    await flush();
+    // The typed model is saved first, without waiting for the typing pause.
+    const modelSave = host.request("set-storyline-generator");
+    expect(modelSave.input).toEqual({ connectionId: "fast", model: "small-2" });
+    expect(host.requests.some((request) => request.action === "generate-storyline")).toBe(false);
+    host.reply(modelSave, { settings: { ...DEFAULT_SETTINGS, storylineConnectionId: "fast", storylineModel: "small-2" }, warnings: [] });
+    await flush();
+    await flush();
+    expect(host.request("generate-storyline").input.characterId).toBe("a");
+
+    // The Settings draft follows, so saving settings later keeps the choice.
+    host.button("Settings").click();
+    host.button("Save settings").click();
+    await flush();
+    expect(host.request("save-settings").input.settings).toMatchObject({ storylineConnectionId: "fast", storylineModel: "small-2" });
+  });
+
+  test("a failed generator save stops generation and explains why", async () => {
+    host = new FrontendHost();
+    host.reply(host.request("refresh"), { ...status("chat-a"), grantedPermissions: ["ui_panels", "generation"] });
+    await flush();
+    host.button("Storyline").click();
+    host.reply(host.request("list-connections"), []);
+    await flush();
+    const model = host.comboboxes.at(-1)!;
+    model.input.value = "x";
+    model.input.dispatchEvent(new host.dom.window.Event("input"));
+    host.button("Generate overview").click();
+    await flush();
+    host.reply(host.request("set-storyline-generator"), undefined, "storylineModel is too long.");
+    await flush();
+    await flush();
+    expect(host.requests.some((request) => request.action === "generate-storyline")).toBe(false);
+    expect(host.drawer.textContent).toContain("storylineModel is too long.");
   });
 });
 
