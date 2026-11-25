@@ -43,7 +43,7 @@ The repository ships the built `dist/backend.js` and `dist/frontend.js`, so no b
 Open the **Waypoints** drawer tab.
 
 - Pick an active greeting and an upcoming greeting.
-- In a solo chat, the ON/OFF switch is stored in that character's `lumiverse_waypoints` extension data.
+- A per-character ON/OFF switch for solo chats is available when **Per-character switch on the character card** is turned on in Settings. It is off by default, because the switch is stored in that character's `lumiverse_waypoints` extension data, which writes to the card. While it is off, Waypoints never writes to character cards and ignores any switch saved on them. **Clear Waypoints data from character card** removes everything Waypoints ever stored on a card.
 - In a group chat, every member has its own per-chat ON/OFF override. New members default to ON, and the greeting pickers can select any member's greeting.
 - Turn on **Auto-prompt** when you want the rendered scene direction added to every generation. It is off by default, so you can inspect the prompt first.
 - Use **Force** to insert the currently selected upcoming greeting immediately.
@@ -184,6 +184,7 @@ The reminder needs `ui_panels` permission and appears only when switching chats,
 The **Interface** section also controls two input-bar surfaces, both enabled by default:
 
 - **Compass button** mounts a compact Waypoints compass beside Lumiverse's native action-bar buttons above the input. Its themed menu contains the chat-level Toggle, Choose current greeting, Choose next greeting, Force, Undo, and Open Waypoints drawer. Its child option **Color the button by chat state**, on by default, turns it green when Waypoints is enabled for the open chat and red when it is disabled.
+- **Per-character switch on the character card** (off by default) shows the solo-chat character switch on the Waypoints tab. Changing that switch writes Waypoints data to the character card, so turning this on comes with that warning.
 - **Extras actions** adds the chat-level Toggle, Choose current greeting, Choose next greeting, Undo, and Force entries to Lumiverse's native **Extras** popover under the Waypoints extension heading.
 
 The two greeting-choice actions open a full-size picker: choose from the available greetings, inspect a large scrollable preview, then confirm with **Use current greeting** or **Use next greeting**. In solo chats, next-greeting choices stay later in the active character's greeting sequence. In group chats, next-greeting choices include every member's greeting except the current one.

@@ -175,6 +175,7 @@ var DEFAULT_SETTINGS = {
   reminderDelaySeconds: 1,
   actionBarButton: true,
   actionBarStatusColor: true,
+  characterCardSwitch: false,
   extrasActions: true,
   storylineTemplate: DEFAULT_STORYLINE_TEMPLATE,
   storylineGeneratorTemplate: DEFAULT_STORYLINE_GENERATOR_TEMPLATE,
@@ -394,6 +395,7 @@ function validateSettings(input) {
     reminderDelaySeconds: readSeconds(source, "reminderDelaySeconds", DEFAULT_SETTINGS.reminderDelaySeconds, 0, 60, issues),
     actionBarButton: readBoolean(source, "actionBarButton", DEFAULT_SETTINGS.actionBarButton, issues),
     actionBarStatusColor: readBoolean(source, "actionBarStatusColor", DEFAULT_SETTINGS.actionBarStatusColor, issues),
+    characterCardSwitch: readBoolean(source, "characterCardSwitch", DEFAULT_SETTINGS.characterCardSwitch, issues),
     extrasActions: readBoolean(source, "extrasActions", DEFAULT_SETTINGS.extrasActions, issues),
     storylineTemplate: readString(source, "storylineTemplate", DEFAULT_SETTINGS.storylineTemplate, 16000, issues),
     storylineGeneratorTemplate: readString(source, "storylineGeneratorTemplate", DEFAULT_SETTINGS.storylineGeneratorTemplate, 16000, issues),
@@ -1012,6 +1014,10 @@ function emptyLoomValues() {
     waypointCount: ""
   };
 }
+function hasCardData(character) {
+  const value = character?.extensions?.[EXTENSION_ID];
+  return value !== undefined && value !== null;
+}
 function emptyStorylineView(reason) {
   return {
     routeEnabled: true,
@@ -1217,7 +1223,7 @@ class WaypointEngine {
     for (const storyline of stored)
       if (storyline)
         storylines[storyline.characterId] = storyline;
-    return { ...context, storylines };
+    return { ...context, storylines, characterCardSwitch: (await this.settings()).characterCardSwitch };
   }
   async storyline(characterId) {
     if (this.storylineCache.has(characterId))
@@ -1265,6 +1271,8 @@ class WaypointEngine {
   isCharacterEnabled(context, state, characterId) {
     if (context.isGroupChat)
       return state.groupEnabledByCharacter[characterId] !== false;
+    if (context.characterCardSwitch === false)
+      return true;
     const character = context.characters.find((entry) => entry.id === characterId);
     const extensionData = character && isRecord(character.extensions?.[EXTENSION_ID]) ? character.extensions?.[EXTENSION_ID] : null;
     return !isRecord(extensionData) || extensionData.enabled !== false;
@@ -1616,13 +1624,32 @@ class WaypointEngine {
         state.groupEnabledByCharacter[characterId] = enabled;
         await this.persistState(chatId, state);
       } else {
+        if (context.characterCardSwitch === false) {
+          throw new Error("The per-character switch is off. Turn it on in Settings first; it writes Waypoints data to the character card.");
+        }
         const character = context.characters.find((entry) => entry.id === characterId);
         const existing = isRecord(character?.extensions?.[EXTENSION_ID]) ? character?.extensions?.[EXTENSION_ID] : {};
+        if (existing.enabled !== false === enabled)
+          return;
         await this.api.characters.update(characterId, {
           extensions: { [EXTENSION_ID]: { ...existing, enabled } }
         }, this.userId);
       }
       this.note("enabled state changed for " + characterId);
+    });
+  }
+  async clearCharacterData(chatId, characterId) {
+    this.assertPermissions(["characters", "chats"], "Clearing Waypoints data from a character card");
+    return this.serial(chatId, async () => {
+      const context = await this.context(chatId);
+      if (!context.characterIds.includes(characterId))
+        throw new Error("That character is not in this chat.");
+      const character = context.characters.find((entry) => entry.id === characterId);
+      if (!hasCardData(character))
+        return false;
+      await this.api.characters.update(characterId, { extensions: { [EXTENSION_ID]: null } }, this.userId);
+      this.note("cleared Waypoints data from the card of " + characterId);
+      return true;
     });
   }
   async setChatEnabled(chatId, enabled) {
@@ -2050,7 +2077,8 @@ class WaypointEngine {
         characters: context.characters.map((character) => ({
           id: character.id,
           name: character.name,
-          enabled: this.isCharacterEnabled(context, state, character.id)
+          enabled: this.isCharacterEnabled(context, state, character.id),
+          cardData: hasCardData(character)
         })),
         greetings: context.greetings,
         active,
@@ -2311,6 +2339,12 @@ async function handleRequest(raw, userId) {
           throw new Error("Choose a character and an enabled state.");
         }
         await current.setEnabled(selectedChatId, input.characterId, input.enabled);
+        result = await current.view(selectedChatId);
+        break;
+      case "clear-character-data":
+        if (!selectedChatId)
+          throw new Error("No active chat is available.");
+        await current.clearCharacterData(selectedChatId, requireCharacterId(input));
         result = await current.view(selectedChatId);
         break;
       case "set-chat-enabled":

@@ -16,7 +16,7 @@ function status(chatId: string | null): WaypointsView {
   })) : [];
   return {
     chatId, chatEnabled: true, isGroupChat: false, grantedPermissions: ["ui_panels"], missingPermissions: [],
-    characters: chatId ? [{ id: characterId, name, enabled: true }] : [],
+    characters: chatId ? [{ id: characterId, name, enabled: true, cardData: false }] : [],
     greetings, active: greetings[0] ?? null, upcoming: greetings[1] ?? null, canUndo: Boolean(chatId),
     status: chatId ? "Ready: " + name : "Open a character or group chat to use Waypoints.",
     settings: structuredClone(DEFAULT_SETTINGS),
@@ -224,10 +224,11 @@ class FrontendHost {
           target.append(input);
           return { destroy: () => input.remove() };
         },
-        mountSwitch: (target: HTMLElement, options: { checked: boolean; onChange: (checked: boolean) => void }) => {
+        mountSwitch: (target: HTMLElement, options: { checked: boolean; ariaLabel?: string; onChange: (checked: boolean) => void }) => {
           const input = document.createElement("input");
           input.type = "checkbox";
           input.checked = options.checked;
+          if (options.ariaLabel) input.setAttribute("aria-label", options.ariaLabel);
           input.onchange = () => options.onChange(input.checked);
           target.append(input);
           return { destroy: () => input.remove() };
@@ -263,6 +264,12 @@ class FrontendHost {
       for (const request of requests) this.reply(request);
     }
     throw new Error("Refreshes did not settle.");
+  }
+
+  /** Triggers a drawer refresh and answers it with the given view. */
+  refreshNow(view: WaypointsView): void {
+    this.activate?.();
+    this.reply(this.request("refresh"), view);
   }
 
   button(label: string, root: HTMLElement = this.drawer): HTMLButtonElement {
@@ -507,6 +514,28 @@ describe("frontend character switching", () => {
       await flush();
       await advance(1_000);
       expect(host!.reminder).toBeUndefined();
+    });
+  });
+
+  test("a store update for the same chat during the delay keeps its reminder", async () => {
+    host = new FrontendHost();
+    await host.finishRefreshes();
+    await withClock(async (advance) => {
+      // A new chat starts OFF; the reminder is set to show on all chats.
+      await openChat("chat-b", (view) => {
+        view.chatEnabled = false;
+        view.settings.reminderShowOn = "all";
+      });
+      // The store re-reports the same chat (its character hydrates) while the reminder waits.
+      host!.switchTo("chat-b", "b2");
+      const off = status("chat-b");
+      off.chatEnabled = false;
+      off.settings.reminderShowOn = "all";
+      for (const request of host!.requests.filter((request) => request.action === "refresh" && !host!.answered.has(request.requestId))) host!.reply(request, off);
+      await flush();
+      await advance(1_000);
+      expect(host!.reminder?.textContent).toContain("Waypoints is DISABLED for this chat!");
+      expect(host!.reminder?.textContent).toContain("click here to ENABLE");
     });
   });
 
@@ -810,6 +839,34 @@ describe("frontend storyline designer", () => {
 });
 
 describe("frontend Prompts and Settings tabs", () => {
+  test("hides the card switch until it is turned on and can clear card data", async () => {
+    host = new FrontendHost();
+    const withData = status("chat-a");
+    withData.characters[0].cardData = true;
+    host.reply(host.request("refresh"), withData);
+    await flush();
+    expect(host.drawer.querySelector("[aria-label='Enable Waypoints for Ada']")).toBeNull();
+    expect(host.drawer.textContent).toContain("Waypoints never writes to character cards");
+    host.button("Clear Waypoints data from character card").click();
+    expect(host.request("clear-character-data").input).toEqual({ chatId: "chat-a", characterId: "a" });
+    host.reply(host.request("clear-character-data"));
+    await host.finishRefreshes();
+    expect(host.button("Clear Waypoints data from character card").disabled).toBe(true);
+
+    const on = status("chat-a");
+    on.settings.characterCardSwitch = true;
+    host.refreshNow(on);
+    await flush();
+    expect(host.drawer.textContent).toContain("Changing it writes Waypoints data to the card.");
+    const toggle = host.drawer.querySelector<HTMLInputElement>("[aria-label='Enable Waypoints for Ada']")!;
+    // Re-reporting the current value never writes to the card.
+    toggle.dispatchEvent(new host.dom.window.Event("change"));
+    expect(host.requests.some((request) => request.action === "set-enabled")).toBe(false);
+    toggle.checked = false;
+    toggle.dispatchEvent(new host.dom.window.Event("change"));
+    expect(host.request("set-enabled").input).toMatchObject({ characterId: "a", enabled: false });
+  });
+
   test("prompts live on their own tab and share one draft with Settings", async () => {
     host = new FrontendHost();
     await host.finishRefreshes();

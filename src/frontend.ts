@@ -173,7 +173,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   let hud: SpindleFloatWidgetHandle | undefined;
   let reminder: {
     chatId: string;
-    version: number;
     /** Waypoints state the reminder announces. */
     enabled: boolean;
     clickToggle: boolean;
@@ -290,7 +289,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
   function tickReminder(): void {
     const current = reminder;
     if (!current) return;
-    if (destroyed || current.version !== selectionVersion) {
+    // Tied to its chat, not to selectionVersion: the store can re-report the
+    // same chat (for example when its character hydrates) during the delay.
+    if (destroyed || ctx.getActiveChat().chatId !== current.chatId) {
       dismissReminder();
       return;
     }
@@ -396,7 +397,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
 
   function toggleFromReminder(current: NonNullable<typeof reminder>): void {
     if (reminder !== current || current.toggling || busy) return;
-    if (destroyed || current.version !== selectionVersion || ctx.getActiveChat().chatId !== current.chatId) {
+    if (destroyed || ctx.getActiveChat().chatId !== current.chatId) {
       dismissReminder();
       return;
     }
@@ -427,7 +428,6 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     const settings = view.settings;
     reminder = {
       chatId,
-      version: selectionVersion,
       enabled: view.chatEnabled,
       clickToggle: settings.reminderClickToggle,
       neverAgain: settings.reminderNeverAgain,
@@ -1035,6 +1035,7 @@ export function setup(ctx: SpindleFrontendContext): () => void {
         checked: view.chatEnabled,
         ariaLabel: "Use Waypoints in this chat",
         onChange: (checked) => {
+          if (checked === view?.chatEnabled) return;
           void safely(async () => {
             await rpc("set-chat-enabled", { chatId: requireCurrentChatId(), enabled: checked });
             await load();
@@ -1072,24 +1073,42 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     parent.append(selections);
 
     const enabled = element("section", "wp-section");
+    const cardSwitch = view.settings.characterCardSwitch;
     enabled.append(element("h3", "", view.isGroupChat ? "Group member switches" : "Character switch"));
-    enabled.append(element("p", "wp-help", view.isGroupChat
-      ? "Each group member has a per-chat override. New members default to ON."
-      : "This character's Waypoints switch is stored on the character card."));
+    if (view.isGroupChat) {
+      enabled.append(element("p", "wp-help", "Each group member has a per-chat override. New members default to ON."));
+    } else if (cardSwitch) {
+      enabled.append(element("p", "wp-alert", "This character's Waypoints switch is stored on the character card. Changing it writes Waypoints data to the card."));
+    } else {
+      enabled.append(element("p", "wp-help", "The per-character switch is off, so Waypoints never writes to character cards and ignores any switch saved on them. Turn it on in Settings to use it."));
+    }
     for (const character of view.characters) {
       const version = selectionVersion;
       const row = element("div", "wp-character");
       const names = element("div");
       names.append(element("div", "wp-character-name", character.name || "Unnamed character"));
-      names.append(element("div", "wp-help", character.enabled ? "ON" : "OFF"));
-      const mount = element("div", "wp-native");
-      row.append(names, mount);
+      const showSwitch = view.isGroupChat || cardSwitch;
+      if (showSwitch) names.append(element("div", "wp-help", character.enabled ? "ON" : "OFF"));
+      const controls = element("div", "wp-row");
+      row.append(names, controls);
       enabled.append(row);
+      const clear = button("Clear Waypoints data from character card", () => safely(async () => {
+        await rpc("clear-character-data", { chatId: requireCurrentChatId(), characterId: character.id });
+        setNotice("Cleared Waypoints data from " + (character.name || "the character") + "'s card.");
+        await load();
+      }), "", !character.cardData);
+      clear.title = character.cardData ? "Remove everything Waypoints stored on this character card" : "This card has no Waypoints data";
+      controls.append(clear);
+      if (!showSwitch) continue;
+      const mount = element("div", "wp-native");
+      controls.append(mount);
       componentHandles.push(ctx.components.mountSwitch(mount, {
         checked: character.enabled,
         ariaLabel: "Enable Waypoints for " + character.name,
         onChange: (checked) => {
           if (!isCurrentSelection(version)) return;
+          // Some hosts report the initial value; only a real change may write.
+          if (checked === character.enabled) return;
           void safely(async () => {
             await rpc("set-enabled", {
               chatId: currentChatId(),
@@ -2010,6 +2029,9 @@ export function setup(ctx: SpindleFrontendContext): () => void {
     actionBarOptions = childOptions(section, draft.actionBarButton);
     addCheckbox(actionBarOptions, validation, "Color the button by chat state", "Green when Waypoints is enabled for the open chat, red when it is disabled.", draft.actionBarStatusColor, (checked) => {
       draft.actionBarStatusColor = checked;
+    });
+    addCheckbox(section, validation, "Per-character switch on the character card", "Off by default. Warning: when on, turning a character's switch on or off writes Waypoints data into that character card. When off, Waypoints never writes to cards and ignores switches saved on them. Each card can be cleaned with Clear Waypoints data from character card on the Waypoints tab.", draft.characterCardSwitch, (checked) => {
+      draft.characterCardSwitch = checked;
     });
     addCheckbox(section, validation, "Show Waypoints actions in the Extras menu", "Adds Toggle, Choose current greeting, Choose next greeting, Undo, and Force entries under Lumiverse's native Extras popover.", draft.extrasActions, (checked) => {
       draft.extrasActions = checked;

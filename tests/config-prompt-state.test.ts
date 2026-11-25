@@ -33,6 +33,7 @@ describe("configuration and prompt rendering", () => {
       reminderDelay: true,
       reminderDelaySeconds: 1,
       actionBarStatusColor: true,
+      characterCardSwitch: false,
     });
     expect(validateSettings({ ...DEFAULT_SETTINGS, reminderDurationSeconds: 2.25 }).settings.reminderDurationSeconds).toBe(2.3);
     expect(() => validateSettings({ ...DEFAULT_SETTINGS, reminderDurationSeconds: 0 })).toThrow(SettingsValidationError);

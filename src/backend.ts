@@ -171,6 +171,11 @@ async function handleRequest(raw: unknown, userId?: string): Promise<void> {
         await current.setEnabled(selectedChatId, input.characterId, input.enabled);
         result = await current.view(selectedChatId);
         break;
+      case "clear-character-data":
+        if (!selectedChatId) throw new Error("No active chat is available.");
+        await current.clearCharacterData(selectedChatId, requireCharacterId(input));
+        result = await current.view(selectedChatId);
+        break;
       case "set-chat-enabled":
         if (!selectedChatId || typeof input.enabled !== "boolean") throw new Error("Choose a chat and an enabled state.");
         await current.setChatEnabled(selectedChatId, input.enabled);

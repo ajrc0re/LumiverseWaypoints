@@ -112,6 +112,11 @@ function emptyLoomValues(): WaypointLoomValues {
   };
 }
 
+function hasCardData(character: { extensions?: Record<string, unknown> } | undefined): boolean {
+  const value = character?.extensions?.[EXTENSION_ID];
+  return value !== undefined && value !== null;
+}
+
 function emptyStorylineView(reason: string): StorylineView {
   return {
     routeEnabled: true,
@@ -348,7 +353,7 @@ export class WaypointEngine {
     const storylines: Record<string, CharacterStoryline> = {};
     const stored = await Promise.all(context.characterIds.map((characterId) => this.storyline(characterId)));
     for (const storyline of stored) if (storyline) storylines[storyline.characterId] = storyline;
-    return { ...context, storylines };
+    return { ...context, storylines, characterCardSwitch: (await this.settings()).characterCardSwitch };
   }
 
   /** Storylines are written only through this engine, so a per-user cache stays coherent. */
@@ -412,6 +417,8 @@ export class WaypointEngine {
     characterId: string,
   ): boolean {
     if (context.isGroupChat) return state.groupEnabledByCharacter[characterId] !== false;
+    // With the per-character switch turned off, card data is ignored entirely.
+    if (context.characterCardSwitch === false) return true;
     const character = context.characters.find((entry) => entry.id === characterId);
     const extensionData = character && isRecord(character.extensions?.[EXTENSION_ID])
       ? character.extensions?.[EXTENSION_ID]
@@ -843,15 +850,38 @@ export class WaypointEngine {
         state.groupEnabledByCharacter[characterId] = enabled;
         await this.persistState(chatId, state);
       } else {
+        if (context.characterCardSwitch === false) {
+          throw new Error("The per-character switch is off. Turn it on in Settings first; it writes Waypoints data to the character card.");
+        }
         // Extensions are shallow-merged per key, so keep any other Waypoints
         // fields already stored on the card.
         const character = context.characters.find((entry) => entry.id === characterId);
         const existing = isRecord(character?.extensions?.[EXTENSION_ID]) ? character?.extensions?.[EXTENSION_ID] as Record<string, unknown> : {};
+        // Never touch the card when nothing would change (no data means on).
+        if ((existing.enabled !== false) === enabled) return;
         await this.api.characters.update(characterId, {
           extensions: { [EXTENSION_ID]: { ...existing, enabled } },
         }, this.userId);
       }
       this.note("enabled state changed for " + characterId);
+    });
+  }
+
+  /**
+   * Removes everything Waypoints stored on a character card. The host merges
+   * extension keys rather than replacing the object, so the key is set to
+   * null, which leaves no Waypoints data behind.
+   */
+  async clearCharacterData(chatId: string, characterId: string): Promise<boolean> {
+    this.assertPermissions(["characters", "chats"], "Clearing Waypoints data from a character card");
+    return this.serial(chatId, async () => {
+      const context = await this.context(chatId);
+      if (!context.characterIds.includes(characterId)) throw new Error("That character is not in this chat.");
+      const character = context.characters.find((entry) => entry.id === characterId);
+      if (!hasCardData(character)) return false;
+      await this.api.characters.update(characterId, { extensions: { [EXTENSION_ID]: null } }, this.userId);
+      this.note("cleared Waypoints data from the card of " + characterId);
+      return true;
     });
   }
 
@@ -1351,6 +1381,7 @@ export class WaypointEngine {
           id: character.id,
           name: character.name,
           enabled: this.isCharacterEnabled(context, state, character.id),
+          cardData: hasCardData(character),
         })),
         greetings: context.greetings,
         active,
